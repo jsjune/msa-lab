@@ -1,93 +1,139 @@
-# Spring Cloud Gateway Lab (하이브리드 로깅 시스템)
+# Spring Cloud Gateway Lab
 
-이 프로젝트는 **Spring Cloud Gateway (WebFlux)**를 기반으로 구축된 고성능 API 게이트웨이이며, 대규모 트래픽 환경에 최적화된 **하이브리드 로깅 아키텍처**를 구현한 예제입니다.
+Spring Cloud Gateway(WebFlux) 기반 API 게이트웨이와 백엔드 서버 3종으로 구성된 MSA 로깅 파이프라인 실습 프로젝트.
 
-대용량 요청/응답 바디(Body)를 로깅할 때 발생하는 메모리 부족(OOM) 문제와 성능 저하를 방지하면서도, 실시간 모니터링이 가능하도록 설계되었습니다.
+## 모듈 구성
 
-## 🏗 시스템 아키텍처
+| 모듈 | 타입 | 포트 | 설명 |
+|------|------|------|------|
+| `spring-cloud-gateway` | Spring Cloud Gateway (WebFlux) | 8000 | 로깅 게이트웨이 |
+| `server-a` | Spring MVC + WebClient | 8081 | 백엔드 A (체인 시작점) |
+| `server-b` | Spring MVC + WebClient | 8082 | 백엔드 B (체인 중간) |
+| `server-c` | Spring MVC | 8083 | 백엔드 C (체인 종단) |
 
-이 로깅 시스템은 성능, 비용, 안정성의 균형을 맞추기 위해 **"이원화 파이프라인(Dual Pipeline)"** 전략을 따릅니다.
+## 로깅 아키텍처 (Dual Pipeline)
 
-### 1. Fast Track (실시간 메타데이터)
-*   **대상 데이터:** `TxId`, `Path`, `Status`, `Duration`, `ErrorReason`, `BodyUrl` (참조 주소).
-*   **흐름:** 게이트웨이 -> Kafka Producer -> Kafka 토픽 (`gateway-meta-logs`).
-*   **목적:** 실시간 대시보드(ELK, Grafana 등), 에러 트래킹, 트래픽 분석.
+### Fast Track — 실시간 메타데이터
+TxId, path, status, duration, error, bodyUrl → **Kafka** 토픽 (`gateway-meta-logs`)
 
-### 2. Slow Track (대용량 바디 저장)
-*   **대상 데이터:** 요청/응답 본문 전체 (최대 10MB 이상 지원).
-*   **흐름:**
-    1.  게이트웨이에서 스트림 수신 -> **로컬 임시 파일**에 즉시 기록 (비동기 I/O).
-    2.  백그라운드 스레드 -> **MinIO (S3 호환)** 스토리지로 비동기 업로드.
-    3.  업로드 완료 -> 로컬 파일 삭제.
-*   **목적:** 상세 감사 로그(Audit Log), 장애 분석용 증거 데이터.
-*   **장점:**
-    *   **메모리 효율성:** 바디 데이터를 힙 메모리에 적재하지 않고 디스크로 스트리밍하여 OOM 방지.
-    *   **서비스 독립성:** 업로드 실패가 API 응답 속도에 영향을 주지 않음 (Fire-and-Forget).
-    *   **비용 최적화:** 비싼 DB 인덱스 저장소 대신 저렴한 오브젝트 스토리지를 활용.
+### Slow Track — 바디 저장
+req/res body + header → **메모리 버퍼(ByteArrayOutputStream)** → **MinIO** 직접 업로드 (로컬 파일 I/O 없음)
 
-## 🚀 주요 특징
+오브젝트 경로: `gateway-logs/{yyyy/MM/dd}/{txId}-hop{n}.{req|res|req.header|res.header}`
 
-*   **Spring Boot 3.x & WebFlux:** 전체 스택이 비동기/논블로킹(Non-blocking)으로 동작.
-*   **스토리지 추상화:** 설정(`gateway.logs.storage.type`) 변경만으로 **MinIO**와 **AWS S3** 간의 전환이 자유로움.
-*   **메시지 큐 추상화:** Kafka 외에 다른 메시지 큐로도 쉽게 확장 가능한 구조.
-*   **시스템 회복력:**
-    *   게이트웨이는 **데이터베이스(DB) 의존성이 전혀 없음**.
-    *   Kafka나 MinIO 장애 시에도 API 서비스는 중단 없이 정상 작동.
-
-## 🛠 주요 설정 가이드
-
-`src/main/resources/application.yml` 또는 환경변수를 통해 설정할 수 있습니다.
-
-### 타겟 서버 및 라우팅 설정 (Target Servers & Routes)
-| 설정 항목 | 환경변수명 | 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `gateway.routes.server-a.id` | `SERVER_A_ROUTE_ID` | `server_a_route` | 서버 A 라우트 ID |
-| `gateway.routes.server-a.path` | `SERVER_A_PATH` | `/server-a/**` | 서버 A 라우팅 경로 패턴 |
-| `gateway.routes.server-a.uri` | `SERVER_A_URL` | `http://localhost:8081` | 서버 A 타겟 URI |
-| `gateway.routes.server-b.id` | `SERVER_B_ROUTE_ID` | `server_b_route` | 서버 B 라우트 ID |
-| `gateway.routes.server-b.path` | `SERVER_B_PATH` | `/server-b/**` | 서버 B 라우팅 경로 패턴 |
-| `gateway.routes.server-b.uri` | `SERVER_B_URL` | `http://localhost:8082` | 서버 B 타겟 URI |
-
-### Kafka (메타데이터)
-| 설정 항목 | 환경변수명 | 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `gateway.kafka.bootstrap-servers` | `KAFKA_SERVERS` | `localhost:9092` | Kafka 브로커 주소 |
-| `gateway.kafka.topic.metadata` | - | `gateway-meta-logs` | 메타데이터 로그 토픽명 |
-
-### MinIO / S3 (바디 저장소)
-| 설정 항목 | 환경변수명 | 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `gateway.logs.storage.type` | - | `minio` | `minio` 또는 `s3` |
-| `gateway.logs.storage.bucket` | `LOG_BUCKET` | `gateway-logs` | 버킷 명칭 |
-| `gateway.logs.minio.endpoint` | `MINIO_ENDPOINT` | `http://localhost:9000` | MinIO 주소 |
-| `gateway.logs.minio.access-key` | `MINIO_ACCESS_KEY` | `minioadmin` | 액세스 키 |
-| `gateway.logs.minio.secret-key` | `MINIO_SECRET_KEY` | `minioadmin` | 비밀 키 |
-
-## 📦 프로젝트 구조
+## 서비스 체인 호출 흐름
 
 ```
-src/main/java/org/example/springcloudgatwaylab/
-├── config/             # 라우트 및 앱 설정
-│   └── GatewayConfiguration.java
-├── filter/             # 전역 필터
-│   └── LoggingGlobalFilter.java  (핵심 로직)
-└── service/            # 비즈니스 로직 및 추상화
-    ├── LogStorageService.java    (인터페이스)
-    ├── MinioStorageService.java  (MinIO 구현체)
-    └── KafkaMetadataSender.java  (Kafka 전송)
+Client → Gateway → server-a /chain
+                      ↓ (X-Tx-Id 전파)
+                    Gateway → server-b /chain
+                                ↓ (X-Tx-Id 전파)
+                              Gateway → server-c /chain (종단, 자기 정보만 반환)
 ```
 
-## 🏃‍♂️ 실행 방법
+게이트웨이를 재진입할 때마다 hop 카운터가 증가하여 같은 txId로 각 hop의 로그가 분리 저장됨.
 
-1.  **인프라 준비 (Kafka & MinIO):**
-    Docker Compose 등을 통해 Kafka와 MinIO를 실행합니다.
+## 인프라 환경 (Kubernetes)
 
-2.  **프로젝트 빌드 및 실행:**
-    ```bash
-    ./gradlew bootRun
-    ```
+### 클러스터 구성
 
-3.  **테스트:**
-    게이트웨이 주소로 요청을 보냅니다 (예: `http://localhost:8080/server-a/hello`).
-    *   **메타데이터 확인:** Kafka 토픽 `gateway-meta-logs`를 모니터링합니다.
-    *   **바디 데이터 확인:** MinIO 버킷 `gateway-logs`에 저장된 파일을 확인합니다.
+| 노드 | 역할 | IP | OS |
+|------|------|-----|-----|
+| master-1 | control-plane | 192.168.137.10 | Rocky Linux 9.7 |
+| worker-1 | worker | 192.168.137.11 | Rocky Linux 9.7 |
+| worker-2 | worker | 192.168.137.12 | Rocky Linux 9.7 |
+| worker-3 | worker | 192.168.137.13 | Rocky Linux 9.7 |
+
+- Kubernetes v1.34.2, containerd 1.7.29
+
+### Kafka (Strimzi Operator)
+
+| 항목 | 값 |
+|------|-----|
+| 클러스터명 | `df-cluster` |
+| Kafka 버전 | 4.1.1 |
+| 브로커 | 3개 (`df-cluster-broker-{0,1,2}`) |
+| 컨트롤러 | 3개 (`df-cluster-controller-{3,4,5}`) |
+| 네임스페이스 | `default` |
+| 내부 접속 (plain) | `df-cluster-kafka-bootstrap:9092` |
+| 외부 접속 (NodePort) | `192.168.137.10:32100` (broker별: 32101, 32102, 32103) |
+| Kafka UI | `http://192.168.137.10:31180` (NodePort) |
+
+### MinIO (마스터 노드 바이너리 설치)
+
+| 항목 | 값 |
+|------|-----|
+| 설치 위치 | master-1 (`192.168.137.10`) |
+| 설치 방법 | `wget https://dl.min.io/server/minio/release/linux-amd64/minio` |
+| API | `http://192.168.137.10:9000` |
+| Console | `http://192.168.137.10:9001` |
+| 기본 계정 | `minioadmin` / `minioadmin` |
+
+### 모니터링
+
+| 서비스 | 접속 주소 |
+|--------|-----------|
+| Grafana | `http://192.168.137.10:30001` |
+| Prometheus | `http://192.168.137.10:30009` |
+
+## 빌드 및 실행
+
+```bash
+# 전체 빌드
+./gradlew build
+
+# 개별 모듈 실행
+./gradlew :spring-cloud-gateway:bootRun   # Gateway (8000)
+./gradlew :server-a:bootRun               # Server A (8081)
+./gradlew :server-b:bootRun               # Server B (8082)
+./gradlew :server-c:bootRun               # Server C (8083)
+
+# 테스트
+./gradlew test                             # 전체
+./gradlew :spring-cloud-gateway:test       # Gateway만
+```
+
+### K8s 배포
+
+```bash
+kubectl apply -f k8s/
+```
+
+## 주요 설정 (application.yml)
+
+### 게이트웨이
+
+| 설정 | 환경변수 | 기본값 |
+|------|----------|--------|
+| `gateway.routes.server-{a,b,c}.uri` | `SERVER_{A,B,C}_URL` | `http://localhost:808{1,2,3}` |
+| `gateway.logs.storage.type` | - | `minio` |
+| `gateway.logs.storage.bucket` | `LOG_BUCKET` | `gateway-logs` |
+| `gateway.logs.minio.endpoint` | `MINIO_ENDPOINT` | `http://192.168.137.10:9000` |
+| `gateway.logs.minio.{access,secret}-key` | `MINIO_{ACCESS,SECRET}_KEY` | `minioadmin` |
+| `spring.kafka.bootstrap-servers` | `KAFKA_SERVERS` | `192.168.137.10:32100` |
+
+### 백엔드 서버
+
+| 설정 | 환경변수 | 기본값 |
+|------|----------|--------|
+| `server.port` | `SERVER_PORT` | `8081` / `8082` / `8083` |
+| `gateway.url` | `GATEWAY_URL` | `http://localhost:8000` |
+
+## API 엔드포인트
+
+### 게이트웨이 (`:8000`)
+- `GET /server-a/**` → server-a로 프록시 (stripPrefix=1)
+- `GET /server-b/**` → server-b로 프록시
+- `GET /server-c/**` → server-c로 프록시
+- `GET /logs/body?bodyUrl=s3://...` → MinIO에서 req/res 바디 조회
+
+### 백엔드 서버 공통
+- `GET /hello` — 헬스체크
+- `GET /pod-info` — Pod 메타정보 (txId, podName, podIp, namespace, nodeName)
+- `GET /chain` — 다음 서버로 체인 호출 (server-c는 종단)
+
+## 기술 스택
+
+- Java 21, Spring Boot 4.0.2, Spring Cloud 2025.1.0
+- Spring Cloud Gateway (WebFlux), Spring Kafka, MinIO SDK 8.6.0
+- Strimzi (Kafka on K8s), MinIO (standalone)
