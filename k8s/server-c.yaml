@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: server-c
-          image: server-c:latest
+          image: master-1:30002/project/server-c:20260215-171522
           ports:
             - containerPort: 8083
           env:

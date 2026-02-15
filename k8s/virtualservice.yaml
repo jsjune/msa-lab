@@ -1,0 +1,18 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: spring-cloud-gateway-vs
+spec:
+  hosts:
+    - "apigtw.com"
+  gateways:
+    - http-gateway
+  http:
+    - match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: spring-cloud-gateway
+            port:
+              number: 8000

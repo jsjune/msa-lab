@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: spring-cloud-gateway
-          image: spring-cloud-gateway:latest
+          image: master-1:30002/project/spring-cloud-gateway:20260215-171522
           ports:
             - containerPort: 8000
           env:
