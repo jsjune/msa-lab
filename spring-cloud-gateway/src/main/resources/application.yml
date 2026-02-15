@@ -1,0 +1,35 @@
+server:
+  port: 8000
+
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:192.168.137.10:32100}
+    topic:
+      metadata: gateway-meta-logs
+
+gateway:
+  routes:
+    server-a:
+      id: ${SERVER_A_ROUTE_ID:server_a_route}
+      path: ${SERVER_A_PATH:/server-a/**}
+      uri: ${SERVER_A_URL:http://localhost:8081}
+    server-b:
+      id: ${SERVER_B_ROUTE_ID:server_b_route}
+      path: ${SERVER_B_PATH:/server-b/**}
+      uri: ${SERVER_B_URL:http://localhost:8082}
+    server-c:
+      id: ${SERVER_C_ROUTE_ID:server_c_route}
+      path: ${SERVER_C_PATH:/server-c/**}
+      uri: ${SERVER_C_URL:http://localhost:8083}
+  logs:
+    storage:
+      type: minio # s3, minio
+      bucket: ${LOG_BUCKET:gateway-logs}
+    minio:
+      endpoint: ${MINIO_ENDPOINT:http://192.168.137.10:9000}
+      access-key: ${MINIO_ACCESS_KEY:minioadmin}
+      secret-key: ${MINIO_SECRET_KEY:minioadmin}
+    s3:
+      region: ${S3_REGION:us-east-1}
+      access-key: ${S3_ACCESS_KEY:}
+      secret-key: ${S3_SECRET_KEY:}

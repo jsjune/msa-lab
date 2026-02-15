@@ -1,0 +1,9 @@
+server:
+  port: ${SERVER_PORT:8082}
+
+spring:
+  application:
+    name: server-b
+
+gateway:
+  url: ${GATEWAY_URL:http://localhost:8000}
