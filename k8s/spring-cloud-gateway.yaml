@@ -14,30 +14,71 @@ spec:
       labels:
         app: spring-cloud-gateway
     spec:
+      dnsConfig:
+        searches:
+          - redis-cluster-leader-headless.default.svc.cluster.local
       containers:
         - name: spring-cloud-gateway
-          image: master-1:30002/project/spring-cloud-gateway:20260215-202210
+          image: master-1:30002/project/spring-cloud-gateway:20260215-233752
           ports:
             - containerPort: 8000
           env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "k8s"
             - name: SERVER_A_URL
               value: "http://server-a:8081"
             - name: SERVER_B_URL
               value: "http://server-b:8082"
             - name: SERVER_C_URL
               value: "http://server-c:8083"
+            - name: REDIS_DYNAMIC_REFRESH
+              value: "false"
+            - name: REDIS_CLUSTER_NODES
+              value: "redis-cluster-leader-0.redis-cluster-leader-headless:6379,redis-cluster-leader-1.redis-cluster-leader-headless:6379,redis-cluster-leader-2.redis-cluster-leader-headless:6379"
             - name: KAFKA_SERVERS
               value: "df-cluster-kafka-bootstrap:9092"
             - name: MINIO_ENDPOINT
               value: "http://192.168.137.10:9000"
             - name: MINIO_ACCESS_KEY
-              value: "minioadmin"
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: access-key
             - name: MINIO_SECRET_KEY
-              value: "minioadmin"
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: secret-key
             - name: LOG_LEVEL_ROOT
               value: "INFO"
             - name: LOG_LEVEL_APP
               value: "INFO"
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8000
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8000
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
 ---
 apiVersion: v1
 kind: Service

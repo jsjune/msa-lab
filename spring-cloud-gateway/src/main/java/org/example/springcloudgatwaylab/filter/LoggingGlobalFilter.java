@@ -12,6 +12,7 @@ import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
 import org.springframework.core.Ordered;
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.server.reactive.ServerHttpRequest;
@@ -25,12 +26,11 @@ import reactor.core.publisher.Mono;
 
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 @Component
 public class LoggingGlobalFilter implements GlobalFilter, Ordered {
@@ -38,16 +38,18 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
     private static final Logger logger = LoggerFactory.getLogger(LoggingGlobalFilter.class);
     private static final String ERROR_ATTRIBUTE = "LOG_ERROR_MSG";
     private static final ObjectMapper objectMapper = new ObjectMapper();
-
-    // 같은 X-Tx-Id가 gateway를 재진입할 때 hop 카운트 관리
-    private final ConcurrentHashMap<String, AtomicInteger> hopCounter = new ConcurrentHashMap<>();
+    private static final String HOP_KEY_PREFIX = "hop:";
+    private static final Duration HOP_KEY_TTL = Duration.ofMinutes(5);
 
     private final LogStorageService storageService;
     private final KafkaMetadataSender metadataSender;
+    private final ReactiveStringRedisTemplate redisTemplate;
 
-    public LoggingGlobalFilter(LogStorageService storageService, KafkaMetadataSender metadataSender) {
+    public LoggingGlobalFilter(LogStorageService storageService, KafkaMetadataSender metadataSender,
+                               ReactiveStringRedisTemplate redisTemplate) {
         this.storageService = storageService;
         this.metadataSender = metadataSender;
+        this.redisTemplate = redisTemplate;
     }
 
     @NotNull
@@ -58,46 +60,53 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
         boolean isNewTx = (txId == null);
         if (isNewTx) txId = UUID.randomUUID().toString();
 
-        // Hop 관리: 같은 X-Tx-Id가 gateway를 재진입하면 hop 자동 증가
         final String finalTxId = txId;
-        final int finalHop = hopCounter
-                .computeIfAbsent(finalTxId, k -> new AtomicInteger(0))
-                .incrementAndGet();
+        final String hopKey = HOP_KEY_PREFIX + finalTxId;
         final String path = exchange.getRequest().getURI().getPath();
 
-        // Request Header 직렬화 & 즉시 업로드
-        byte[] reqHeaderBytes = serializeHeaders(exchange.getRequest().getHeaders());
-        uploadData(finalTxId, reqHeaderBytes, "req.header", finalHop);
+        // Redis INCR로 hop 원자적 증가 → 이후 필터 체인 실행
+        return redisTemplate.opsForValue().increment(hopKey)
+                .flatMap(hopLong ->
+                    // TTL 설정 (키 누수 방지)
+                    redisTemplate.expire(hopKey, HOP_KEY_TTL).thenReturn(hopLong)
+                )
+                .flatMap(hopLong -> {
+                    final int finalHop = hopLong.intValue();
 
-        // 요청 메타 정보 로깅
-        String method = exchange.getRequest().getMethod().name();
-        logger.info("[REQ] txId={}, hop={}, method={}, path={}", finalTxId, finalHop, method, path);
+                    // Request Header 직렬화 & 즉시 업로드
+                    byte[] reqHeaderBytes = serializeHeaders(exchange.getRequest().getHeaders());
+                    uploadData(finalTxId, reqHeaderBytes, "req.header", finalHop);
 
-        // 메모리 버퍼 준비
-        ByteArrayOutputStream reqOutputStream = new ByteArrayOutputStream();
-        ByteArrayOutputStream resOutputStream = new ByteArrayOutputStream();
+                    // 요청 메타 정보 로깅
+                    String method = exchange.getRequest().getMethod().name();
+                    logger.info("[REQ] txId={}, hop={}, method={}, path={}", finalTxId, finalHop, method, path);
 
-        // Decorate (add X-Tx-Id header to downstream request)
-        ServerHttpRequest mutatedRequest = exchange.getRequest().mutate()
-                .header("X-Tx-Id", finalTxId)
-                .build();
-        RequestBufferLoggingDecorator reqDecorator = new RequestBufferLoggingDecorator(
-                mutatedRequest, reqOutputStream, finalTxId, finalHop);
-        ResponseBufferLoggingDecorator resDecorator = new ResponseBufferLoggingDecorator(exchange.getResponse(), resOutputStream);
+                    // 메모리 버퍼 준비
+                    ByteArrayOutputStream reqOutputStream = new ByteArrayOutputStream();
+                    ByteArrayOutputStream resOutputStream = new ByteArrayOutputStream();
 
-        return chain.filter(exchange.mutate().request(reqDecorator).response(resDecorator).build())
-                .doOnError(e -> exchange.getAttributes().put(ERROR_ATTRIBUTE, e.getMessage()))
-                .doFinally(signalType -> {
-                    // Response Header 직렬화 & 업로드
-                    byte[] resHeaderBytes = serializeHeaders(exchange.getResponse().getHeaders());
-                    uploadData(finalTxId, resOutputStream.toByteArray(), "res", finalHop);
-                    uploadData(finalTxId, resHeaderBytes, "res.header", finalHop);
+                    // Decorate (add X-Tx-Id header to downstream request)
+                    ServerHttpRequest mutatedRequest = exchange.getRequest().mutate()
+                            .header("X-Tx-Id", finalTxId)
+                            .build();
+                    RequestBufferLoggingDecorator reqDecorator = new RequestBufferLoggingDecorator(
+                            mutatedRequest, reqOutputStream, finalTxId, finalHop);
+                    ResponseBufferLoggingDecorator resDecorator = new ResponseBufferLoggingDecorator(
+                            exchange.getResponse(), resOutputStream);
 
-                    sendMetadata(exchange, finalTxId, finalHop, path, startTime);
+                    return chain.filter(exchange.mutate().request(reqDecorator).response(resDecorator).build())
+                            .doOnError(e -> exchange.getAttributes().put(ERROR_ATTRIBUTE, e.getMessage()))
+                            .doFinally(signalType -> {
+                                // Response Header 직렬화 & 업로드
+                                byte[] resHeaderBytes = serializeHeaders(exchange.getResponse().getHeaders());
+                                uploadData(finalTxId, resOutputStream.toByteArray(), "res", finalHop);
+                                uploadData(finalTxId, resHeaderBytes, "res.header", finalHop);
 
-                    if (isNewTx) {
-                        hopCounter.remove(finalTxId);
-                    }
+                                sendMetadata(exchange, finalTxId, finalHop, path, startTime);
+                            })
+                            .then(isNewTx
+                                    ? redisTemplate.delete(hopKey).then()
+                                    : Mono.empty());
                 });
     }
 

@@ -3,7 +3,6 @@ package org.example.springcloudgatwaylab.controller;
 import io.minio.GetObjectArgs;
 import io.minio.MinioAsyncClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -23,13 +22,8 @@ public class LogReaderController {
     private final MinioAsyncClient minioClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public LogReaderController(@Value("${gateway.logs.minio.endpoint}") String endpoint,
-                               @Value("${gateway.logs.minio.access-key}") String accessKey,
-                               @Value("${gateway.logs.minio.secret-key}") String secretKey) {
-        this.minioClient = MinioAsyncClient.builder()
-                .endpoint(endpoint)
-                .credentials(accessKey, secretKey)
-                .build();
+    public LogReaderController(MinioAsyncClient minioClient) {
+        this.minioClient = minioClient;
     }
 
     /**

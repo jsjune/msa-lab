@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
+
 import java.io.ByteArrayInputStream;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -21,15 +22,10 @@ public class MinioStorageService implements LogStorageService {
     private final MinioAsyncClient minioClient;
     private final String bucketName;
 
-    public MinioStorageService(@Value("${gateway.logs.minio.endpoint}") String endpoint,
-                               @Value("${gateway.logs.minio.access-key}") String accessKey,
-                               @Value("${gateway.logs.minio.secret-key}") String secretKey,
+    public MinioStorageService(MinioAsyncClient minioClient,
                                @Value("${gateway.logs.storage.bucket}") String bucketName) {
+        this.minioClient = minioClient;
         this.bucketName = bucketName;
-        this.minioClient = MinioAsyncClient.builder()
-                .endpoint(endpoint)
-                .credentials(accessKey, secretKey)
-                .build();
     }
 
     @Override
