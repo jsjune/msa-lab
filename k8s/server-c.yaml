@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: server-c
-          image: master-1:30002/project/server-c:20260215-171522
+          image: master-1:30002/project/server-c:20260215-202210
           ports:
             - containerPort: 8083
           env:
@@ -36,6 +36,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: LOG_LEVEL_ROOT
+              value: "INFO"
+            - name: LOG_LEVEL_APP
+              value: "INFO"
 ---
 apiVersion: v1
 kind: Service

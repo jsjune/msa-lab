@@ -4,3 +4,8 @@ server:
 spring:
   application:
     name: server-c
+
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    org.example.serverc: ${LOG_LEVEL_APP:INFO}

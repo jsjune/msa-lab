@@ -1,6 +1,11 @@
 server:
   port: 8000
 
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    org.example.springcloudgatwaylab: ${LOG_LEVEL_APP:INFO}
+
 spring:
   kafka:
     bootstrap-servers: ${KAFKA_SERVERS:192.168.137.10:32100}

@@ -5,5 +5,10 @@ spring:
   application:
     name: server-a
 
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    org.example.servera: ${LOG_LEVEL_APP:INFO}
+
 gateway:
   url: ${GATEWAY_URL:http://localhost:8000}

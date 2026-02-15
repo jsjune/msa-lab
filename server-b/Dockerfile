@@ -1,10 +1,5 @@
-FROM gradle:jdk21 AS build
+FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
-COPY . .
-RUN gradle :server-b:bootJar -x test --no-daemon
-
-FROM eclipse-temurin:21-jre
-WORKDIR /app
-COPY --from=build /app/server-b/build/libs/*.jar app.jar
-EXPOSE 8082
+# 이미 빌드된 jar 파일만 복사
+COPY server-b/build/libs/*.jar app.jar
 ENTRYPOINT ["java", "-jar", "app.jar"]

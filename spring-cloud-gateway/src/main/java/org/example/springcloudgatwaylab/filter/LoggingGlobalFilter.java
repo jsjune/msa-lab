@@ -65,8 +65,13 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
                 .incrementAndGet();
         final String path = exchange.getRequest().getURI().getPath();
 
-        // Request Header 직렬화 (요청 시점에 즉시 기록)
+        // Request Header 직렬화 & 즉시 업로드
         byte[] reqHeaderBytes = serializeHeaders(exchange.getRequest().getHeaders());
+        uploadData(finalTxId, reqHeaderBytes, "req.header", finalHop);
+
+        // 요청 메타 정보 로깅
+        String method = exchange.getRequest().getMethod().name();
+        logger.info("[REQ] txId={}, hop={}, method={}, path={}", finalTxId, finalHop, method, path);
 
         // 메모리 버퍼 준비
         ByteArrayOutputStream reqOutputStream = new ByteArrayOutputStream();
@@ -76,19 +81,16 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
         ServerHttpRequest mutatedRequest = exchange.getRequest().mutate()
                 .header("X-Tx-Id", finalTxId)
                 .build();
-        RequestBufferLoggingDecorator reqDecorator = new RequestBufferLoggingDecorator(mutatedRequest, reqOutputStream);
+        RequestBufferLoggingDecorator reqDecorator = new RequestBufferLoggingDecorator(
+                mutatedRequest, reqOutputStream, finalTxId, finalHop);
         ResponseBufferLoggingDecorator resDecorator = new ResponseBufferLoggingDecorator(exchange.getResponse(), resOutputStream);
 
         return chain.filter(exchange.mutate().request(reqDecorator).response(resDecorator).build())
                 .doOnError(e -> exchange.getAttributes().put(ERROR_ATTRIBUTE, e.getMessage()))
                 .doFinally(signalType -> {
-                    // Response Header 직렬화 (응답 완료 시점에 기록)
+                    // Response Header 직렬화 & 업로드
                     byte[] resHeaderBytes = serializeHeaders(exchange.getResponse().getHeaders());
-
-                    // 메모리에서 바로 업로드
-                    uploadData(finalTxId, reqOutputStream.toByteArray(), "req", finalHop);
                     uploadData(finalTxId, resOutputStream.toByteArray(), "res", finalHop);
-                    uploadData(finalTxId, reqHeaderBytes, "req.header", finalHop);
                     uploadData(finalTxId, resHeaderBytes, "res.header", finalHop);
 
                     sendMetadata(exchange, finalTxId, finalHop, path, startTime);
@@ -142,6 +144,7 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
             metadata.put("error", errorMsg != null ? errorMsg : "HTTP Error");
         }
 
+        logger.info("[RES] {}", metadata);
         metadataSender.send(metadata);
     }
 
@@ -153,10 +156,15 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
     // --- Request Decorator ---
     class RequestBufferLoggingDecorator extends ServerHttpRequestDecorator {
         private final ByteArrayOutputStream outputStream;
+        private final String txId;
+        private final int hop;
 
-        public RequestBufferLoggingDecorator(ServerHttpRequest delegate, ByteArrayOutputStream outputStream) {
+        public RequestBufferLoggingDecorator(ServerHttpRequest delegate, ByteArrayOutputStream outputStream,
+                                             String txId, int hop) {
             super(delegate);
             this.outputStream = outputStream;
+            this.txId = txId;
+            this.hop = hop;
         }
 
         @NotNull
@@ -167,6 +175,9 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
                 buffer.read(bytes);
                 buffer.readPosition(buffer.readPosition() - bytes.length);
                 outputStream.write(bytes, 0, bytes.length);
+            }).doOnComplete(() -> {
+                // 요청 바디 소비 완료 시 즉시 업로드
+                uploadData(txId, outputStream.toByteArray(), "req", hop);
             });
         }
     }

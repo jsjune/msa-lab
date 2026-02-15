@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: spring-cloud-gateway
-          image: master-1:30002/project/spring-cloud-gateway:20260215-171522
+          image: master-1:30002/project/spring-cloud-gateway:20260215-202210
           ports:
             - containerPort: 8000
           env:
@@ -34,6 +34,10 @@ spec:
               value: "minioadmin"
             - name: MINIO_SECRET_KEY
               value: "minioadmin"
+            - name: LOG_LEVEL_ROOT
+              value: "INFO"
+            - name: LOG_LEVEL_APP
+              value: "INFO"
 ---
 apiVersion: v1
 kind: Service

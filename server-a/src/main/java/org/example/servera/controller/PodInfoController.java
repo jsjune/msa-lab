@@ -62,7 +62,10 @@ public class PodInfoController {
 
         return webClient.get()
                 .uri("/server-b/chain")
-                .headers(h -> { if (txId != null) h.set("X-Tx-Id", txId); })
+                .headers(h -> {
+                    h.addAll(headers);
+                    h.set("X-Server-A-Sample", "passed-through-server-a");
+                })
                 .retrieve()
                 .bodyToMono(Map.class)
                 .map(serverBResponse -> {

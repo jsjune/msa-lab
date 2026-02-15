@@ -15,6 +15,13 @@ echo Registry : %REGISTRY%
 echo Tag      : %TAG%
 echo ============================================
 
+echo [GRADLE] Building all modules...
+call "%SCRIPT_DIR%\gradlew.bat" -p "%SCRIPT_DIR%" build -x test
+if %errorlevel% neq 0 (
+    echo [ERROR] gradle build failed
+    exit /b 1
+)
+
 for %%M in (spring-cloud-gateway server-a server-b server-c) do (
     set MODULE=%%M
     set IMAGE=%REGISTRY%/%%M:!TAG!
@@ -35,6 +42,14 @@ for %%M in (spring-cloud-gateway server-a server-b server-c) do (
     if !errorlevel! neq 0 (
         echo [ERROR] docker push failed for %%M
         exit /b 1
+    )
+
+    echo [CLEAN] Removing old %REGISTRY%/%%M images ^(keeping !TAG!^)...
+    for /f "tokens=*" %%J in ('docker images --format "{{.Repository}}:{{.Tag}}" %REGISTRY%/%%M') do (
+        if /i not "%%J"=="!IMAGE!" (
+            echo         Removing %%J
+            docker rmi %%J 2>nul
+        )
     )
 
     :: Update k8s YAML

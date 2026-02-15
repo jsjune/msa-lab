@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: server-b
-          image: master-1:30002/project/server-b:20260215-171522
+          image: master-1:30002/project/server-b:20260215-202210
           ports:
             - containerPort: 8082
           env:
@@ -38,6 +38,10 @@ spec:
                   fieldPath: spec.nodeName
             - name: GATEWAY_URL
               value: "http://spring-cloud-gateway:8000"
+            - name: LOG_LEVEL_ROOT
+              value: "INFO"
+            - name: LOG_LEVEL_APP
+              value: "INFO"
 ---
 apiVersion: v1
 kind: Service
