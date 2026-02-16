@@ -85,8 +85,17 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
         return redisTemplate.opsForValue().increment(hopKey)
                 .flatMap(hopLong ->
                         // TTL 설정 (키 누수 방지)
-                        redisTemplate.expire(hopKey, HOP_KEY_TTL).thenReturn(hopLong)
+                        redisTemplate.expire(hopKey, HOP_KEY_TTL)
+                                .onErrorResume(e -> {
+                                    logger.warn("Failed to set TTL for hop key: {}", hopKey, e);
+                                    return Mono.just(true);
+                                })
+                                .thenReturn(hopLong)
                 )
+                .onErrorResume(e -> {
+                    logger.warn("Redis unavailable, using default hop=0: txId={}", finalTxId, e);
+                    return Mono.just(0L);
+                })
                 .flatMap(hopLong -> {
                     final int finalHop = hopLong.intValue();
 
@@ -136,8 +145,13 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
                                 Mono<Void> resHeaderUpload = uploadDataAsync(
                                         finalTxId, resHeaderBytes, "res.header", finalHop);
 
-                                Mono<Void> metadataUpload = Mono.fromRunnable(
-                                                () -> sendMetadata(exchange, finalTxId, finalHop, path, startTime))
+                                Mono<Void> metadataUpload = Mono.fromRunnable(() -> {
+                                            try {
+                                                sendMetadata(exchange, finalTxId, finalHop, path, startTime);
+                                            } catch (Exception e) {
+                                                logger.warn("Failed to send metadata: txId={}", finalTxId, e);
+                                            }
+                                        })
                                         .subscribeOn(Schedulers.boundedElastic())
                                         .then();
 
@@ -149,7 +163,12 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
                                 // ── [6] 최초 진입 txId인 경우 Redis 키 정리 ──
                                 // 위의 업로드/메타데이터가 모두 완료된 후에만 실행됨
                                 if (isNewTx) {
-                                    return redisTemplate.delete(hopKey).then();
+                                    return redisTemplate.delete(hopKey)
+                                            .onErrorResume(e -> {
+                                                logger.warn("Failed to delete hop key: {}", hopKey, e);
+                                                return Mono.just(0L);
+                                            })
+                                            .then();
                                 }
                                 return Mono.empty();
                             }));

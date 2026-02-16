@@ -5,20 +5,18 @@ import org.example.springcloudgatwaylab.service.LogStorageService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
+import org.springframework.core.Ordered;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.core.ReactiveValueOperations;
-import org.springframework.http.HttpMethod;
-import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
-
-import org.mockito.ArgumentCaptor;
-import org.springframework.core.Ordered;
 
 import java.time.Duration;
 import java.util.Map;
@@ -244,5 +242,365 @@ class LoggingGlobalFilterTest {
     @DisplayName("필터 순서가 HIGHEST_PRECEDENCE이다")
     void getOrder_returnsHighestPrecedence() {
         assertThat(filter.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE);
+    }
+
+    // ── Phase 4: 전체 흐름 통합 ──
+
+    @Test
+    @DisplayName("POST 요청 시 req body, req.header, res.header를 업로드하고 Kafka 메타데이터를 전송한다")
+    void filter_postRequest_uploadsObjectsAndSendsMetadata() {
+        // given
+        MockServerHttpRequest request = MockServerHttpRequest
+                .post("/server-a/data")
+                .body(Flux.just(DefaultDataBufferFactory.sharedInstance.wrap("request-body".getBytes())));
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // chain이 body를 consume하도록 설정
+        when(chain.filter(any())).thenAnswer(invocation -> {
+            ServerWebExchange mutated = invocation.getArgument(0);
+            return mutated.getRequest().getBody().then();
+        });
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — req body, req.header, res.header 업로드 (res body는 mock이라 비어있어 스킵)
+        verify(storageService).upload(anyString(), any(byte[].class), eq("req"), anyInt());
+        verify(storageService).upload(anyString(), any(byte[].class), eq("req.header"), anyInt());
+        verify(storageService).upload(anyString(), any(byte[].class), eq("res.header"), anyInt());
+        // Kafka metadata 전송
+        verify(metadataSender).send(any(Map.class));
+    }
+
+    @Test
+    @DisplayName("GET 요청 시 req body를 스킵하고 3개 객체만 업로드한다")
+    void filter_getRequest_uploads3ObjectsSkipsReqBody() {
+        // given
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — req body 스킵, 나머지 3개 업로드
+        verify(storageService, never()).upload(anyString(), any(byte[].class), eq("req"), anyInt());
+        verify(storageService).upload(anyString(), any(byte[].class), eq("req.header"), anyInt());
+        verify(storageService).upload(anyString(), any(byte[].class), eq("res.header"), anyInt());
+        // Kafka metadata 전송
+        verify(metadataSender).send(any(Map.class));
+    }
+
+    @Test
+    @DisplayName("동일 txId로 연속 요청 시 hop 값이 증가한다")
+    void filter_sameExistingTxId_hopIncreases() {
+        // given — 두 번째 요청은 hop=2
+        when(valueOps.increment(anyString()))
+                .thenReturn(Mono.just(1L))
+                .thenReturn(Mono.just(2L));
+
+        MockServerHttpRequest req1 = MockServerHttpRequest
+                .get("/server-a/chain").header("X-Tx-Id", "shared-tx").build();
+        MockServerHttpRequest req2 = MockServerHttpRequest
+                .get("/server-b/chain").header("X-Tx-Id", "shared-tx").build();
+
+        // when
+        StepVerifier.create(filter.filter(MockServerWebExchange.from(req1), chain))
+                .verifyComplete();
+        StepVerifier.create(filter.filter(MockServerWebExchange.from(req2), chain))
+                .verifyComplete();
+
+        // then — Redis INCR 2번, delete 없음 (isNewTx=false)
+        verify(valueOps, times(2)).increment(eq("hop:shared-tx"));
+        verify(redisTemplate, never()).delete(anyString());
+    }
+
+    @Test
+    @DisplayName("StorageService 업로드 실패해도 필터는 정상 완료된다")
+    void filter_uploadFailure_filterStillCompletes() {
+        // given
+        doThrow(new RuntimeException("MinIO down")).when(storageService)
+                .upload(anyString(), any(byte[].class), anyString(), anyInt());
+
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when & then — 예외 전파 없이 완료
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("필터 체인 예외 발생 시 에러가 전파되고 ERROR_ATTRIBUTE에 메시지가 저장된다")
+    void filter_chainException_errorPropagatesAndAttributeSet() {
+        // given
+        when(chain.filter(any())).thenReturn(Mono.error(new RuntimeException("Backend error")));
+
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when & then — 에러가 전파됨 (doOnError는 관찰만 함)
+        StepVerifier.create(filter.filter(exchange, chain))
+                .expectError(RuntimeException.class)
+                .verify();
+
+        // ERROR_ATTRIBUTE에 메시지 저장 확인
+        assertThat((String) exchange.getAttribute("LOG_ERROR_MSG")).isEqualTo("Backend error");
+    }
+
+    @Test
+    @DisplayName("Kafka send 예외 시 필터는 정상 완료된다 (graceful degradation)")
+    void filter_kafkaSendException_filterStillCompletes() {
+        // given — metadataSender.send()에서 미처리 예외 발생
+        doThrow(new RuntimeException("Kafka down")).when(metadataSender).send(any());
+
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when & then — try-catch로 감싸져 있으므로 예외가 전파되지 않음
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+    }
+
+    @Test
+    @DisplayName("Redis 호출 실패 시 hop=0으로 폴백하여 필터가 정상 완료된다")
+    void filter_redisFailure_fallbackToDefaultHop() {
+        // given
+        when(valueOps.increment(anyString())).thenReturn(Mono.error(new RuntimeException("Redis down")));
+
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when & then — Redis 실패 시 hop=0으로 폴백, 라우팅 정상 진행
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // hop=0으로 storageService 호출 확인
+        verify(storageService).upload(anyString(), any(byte[].class), eq("req.header"), eq(0));
+    }
+
+    @Test
+    @DisplayName("Redis EXPIRE만 실패해도 INCR 성공값으로 필터가 정상 완료된다")
+    void filter_redisExpireFailure_filterStillCompletes() {
+        // given — INCR 성공, EXPIRE 실패
+        when(valueOps.increment(anyString())).thenReturn(Mono.just(3L));
+        when(redisTemplate.expire(anyString(), any(Duration.class)))
+                .thenReturn(Mono.error(new RuntimeException("Redis EXPIRE failed")));
+
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when & then — EXPIRE 실패해도 hop=3으로 정상 진행
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // INCR 성공값(3)으로 storageService 호출 확인
+        verify(storageService).upload(anyString(), any(byte[].class), eq("req.header"), eq(3));
+    }
+
+    // ── Phase 6: Edge Cases & Resilience ──
+
+    @Test
+    @DisplayName("1MB 이상 큰 요청 본문이 정상적으로 캡처되어 업로드된다")
+    void filter_largeRequestBody_capturedAndUploaded() {
+        // given — 1MB payload split into multiple DataBuffer chunks
+        byte[] chunk = new byte[256 * 1024]; // 256KB
+        java.util.Arrays.fill(chunk, (byte) 'A');
+        Flux<org.springframework.core.io.buffer.DataBuffer> bodyFlux = Flux.range(0, 4)
+                .map(i -> DefaultDataBufferFactory.sharedInstance.wrap(chunk.clone()));
+
+        MockServerHttpRequest request = MockServerHttpRequest
+                .post("/server-a/upload")
+                .body(bodyFlux);
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // chain이 body를 consume
+        when(chain.filter(any())).thenAnswer(invocation -> {
+            ServerWebExchange mutated = invocation.getArgument(0);
+            return mutated.getRequest().getBody().then();
+        });
+
+        // capture uploaded bytes
+        ArgumentCaptor<byte[]> dataCaptor = ArgumentCaptor.forClass(byte[].class);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — "req" type으로 1MB 데이터 업로드 확인
+        verify(storageService).upload(anyString(), dataCaptor.capture(), eq("req"), anyInt());
+        assertThat(dataCaptor.getValue()).hasSize(1024 * 1024); // 1MB
+    }
+
+    @Test
+    @DisplayName("1MB 이상 큰 응답 본문이 정상적으로 캡처되어 업로드된다")
+    void filter_largeResponseBody_capturedAndUploaded() {
+        // given — 1MB response payload in 4 chunks
+        byte[] chunk = new byte[256 * 1024]; // 256KB
+        java.util.Arrays.fill(chunk, (byte) 'B');
+
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/big-response").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // chain이 response에 1MB 데이터를 write
+        when(chain.filter(any())).thenAnswer(invocation -> {
+            ServerWebExchange mutated = invocation.getArgument(0);
+            Flux<org.springframework.core.io.buffer.DataBuffer> responseBody = Flux.range(0, 4)
+                    .map(i -> DefaultDataBufferFactory.sharedInstance.wrap(chunk.clone()));
+            return mutated.getResponse().writeWith(responseBody);
+        });
+
+        // capture uploaded bytes
+        ArgumentCaptor<byte[]> dataCaptor = ArgumentCaptor.forClass(byte[].class);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — "res" type으로 1MB 데이터 업로드 확인
+        verify(storageService).upload(anyString(), dataCaptor.capture(), eq("res"), anyInt());
+        assertThat(dataCaptor.getValue()).hasSize(1024 * 1024); // 1MB
+    }
+
+    @Test
+    @DisplayName("동시 다중 요청 시 각 요청의 ByteArrayOutputStream이 격리되어 body가 섞이지 않는다")
+    void filter_concurrentRequests_bodyBuffersAreIsolated() {
+        // given — 서로 다른 body를 가진 두 요청
+        byte[] bodyA = "AAAA-request-body".getBytes();
+        byte[] bodyB = "BBBB-request-body".getBytes();
+
+        MockServerHttpRequest requestA = MockServerHttpRequest
+                .post("/server-a/data")
+                .body(Flux.just(DefaultDataBufferFactory.sharedInstance.wrap(bodyA)));
+        MockServerHttpRequest requestB = MockServerHttpRequest
+                .post("/server-b/data")
+                .body(Flux.just(DefaultDataBufferFactory.sharedInstance.wrap(bodyB)));
+
+        MockServerWebExchange exchangeA = MockServerWebExchange.from(requestA);
+        MockServerWebExchange exchangeB = MockServerWebExchange.from(requestB);
+
+        // chain이 body를 consume
+        when(chain.filter(any())).thenAnswer(invocation -> {
+            ServerWebExchange mutated = invocation.getArgument(0);
+            return mutated.getRequest().getBody().then();
+        });
+
+        // when — 두 요청을 동시에 실행
+        Mono<Void> filterA = filter.filter(exchangeA, chain);
+        Mono<Void> filterB = filter.filter(exchangeB, chain);
+
+        StepVerifier.create(Mono.when(filterA, filterB))
+                .verifyComplete();
+
+        // then — "req" type 업로드가 2번 호출되고, 각각 올바른 body를 가짐
+        ArgumentCaptor<byte[]> dataCaptor = ArgumentCaptor.forClass(byte[].class);
+        verify(storageService, times(2)).upload(anyString(), dataCaptor.capture(), eq("req"), anyInt());
+
+        java.util.List<byte[]> capturedBodies = dataCaptor.getAllValues();
+        assertThat(capturedBodies).hasSize(2);
+        // 두 body가 서로 다르고, 각각 원본과 일치
+        assertThat(new String(capturedBodies.get(0))).isIn("AAAA-request-body", "BBBB-request-body");
+        assertThat(new String(capturedBodies.get(1))).isIn("AAAA-request-body", "BBBB-request-body");
+        assertThat(new String(capturedBodies.get(0))).isNotEqualTo(new String(capturedBodies.get(1)));
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("인코딩된 특수문자가 포함된 경로가 메타데이터에 정상적으로 포함된다")
+    void filter_encodedPathChars_metadataContainsPath() {
+        // given
+        MockServerHttpRequest request = MockServerHttpRequest
+                .get("/server-a/%ED%99%8D%EA%B8%B8%EB%8F%99?q=%EC%95%88%EB%85%95")
+                .build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(metadataSender).send(captor.capture());
+
+        Map<String, Object> metadata = captor.getValue();
+        assertThat((String) metadata.get("path")).contains("/server-a/");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("204 No Content 응답 시 빈 body로 업로드하고 메타데이터를 정상 전송한다")
+    void filter_204NoContent_uploadsEmptyBodyAndSendsMetadata() {
+        // given
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/no-content").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // chain이 204 응답을 반환 (body 없음)
+        when(chain.filter(any())).thenAnswer(invocation -> {
+            ServerWebExchange mutated = invocation.getArgument(0);
+            mutated.getResponse().setStatusCode(org.springframework.http.HttpStatus.NO_CONTENT);
+            return Mono.empty();
+        });
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — res body는 비어있으므로 upload 스킵 (uploadDataAsync에서 빈 배열은 skip)
+        verify(storageService, never()).upload(anyString(), any(byte[].class), eq("res"), anyInt());
+        // 메타데이터는 정상 전송
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(metadataSender).send(captor.capture());
+        assertThat(captor.getValue().get("status")).isEqualTo(204);
+    }
+
+    @Test
+    @DisplayName("HEAD 요청 시 request body 캡처를 생략한다")
+    void filter_headRequest_skipsRequestBodyCapture() {
+        // given
+        MockServerHttpRequest request = MockServerHttpRequest.head("/server-a/resource").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — HEAD는 body-less method → req body upload 스킵
+        verify(storageService, never()).upload(anyString(), any(byte[].class), eq("req"), anyInt());
+        // req.header는 업로드됨
+        verify(storageService).upload(anyString(), any(byte[].class), eq("req.header"), anyInt());
+        // 메타데이터 전송됨
+        verify(metadataSender).send(any(Map.class));
+    }
+
+    @Test
+    @DisplayName("동시 요청 시 각 요청에 서로 다른 txId가 생성된다")
+    void filter_concurrentRequests_uniqueTxIds() {
+        // given — X-Tx-Id 헤더 없는 3개 요청 (각각 새 UUID 생성)
+        java.util.List<String> capturedTxIds = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
+        when(chain.filter(any())).thenAnswer(invocation -> {
+            ServerWebExchange mutated = invocation.getArgument(0);
+            String txId = mutated.getRequest().getHeaders().getFirst("X-Tx-Id");
+            capturedTxIds.add(txId);
+            return Mono.empty();
+        });
+
+        MockServerWebExchange ex1 = MockServerWebExchange.from(MockServerHttpRequest.get("/server-a/1").build());
+        MockServerWebExchange ex2 = MockServerWebExchange.from(MockServerHttpRequest.get("/server-a/2").build());
+        MockServerWebExchange ex3 = MockServerWebExchange.from(MockServerHttpRequest.get("/server-a/3").build());
+
+        // when — 동시 실행
+        StepVerifier.create(Mono.when(
+                        filter.filter(ex1, chain),
+                        filter.filter(ex2, chain),
+                        filter.filter(ex3, chain)))
+                .verifyComplete();
+
+        // then — 3개 모두 고유한 UUID
+        assertThat(capturedTxIds).hasSize(3);
+        assertThat(new java.util.HashSet<>(capturedTxIds)).hasSize(3); // 중복 없음
+        capturedTxIds.forEach(txId ->
+                assertThat(txId).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"));
     }
 }

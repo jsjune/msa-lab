@@ -76,4 +76,25 @@ class LoggingGlobalFilterHeaderSerializationTest {
         // then
         assertThat(result).isEmpty();
     }
+
+    @Test
+    @DisplayName("한글/특수문자가 포함된 헤더도 정상 직렬화된다")
+    void serializeHeaders_withKoreanAndSpecialChars_serializesCorrectly() throws Exception {
+        // given
+        HttpHeaders headers = new HttpHeaders();
+        headers.add("X-Custom-Name", "홍길동");
+        headers.add("X-Description", "테스트 값 @#$%^&*()");
+        headers.add("X-Emoji", "✅🚀");
+
+        // when
+        byte[] result = LoggingGlobalFilter.serializeHeaders(headers);
+
+        // then
+        assertThat(result).isNotEmpty();
+
+        Map<String, String> parsed = objectMapper.readValue(result, Map.class);
+        assertThat(parsed).containsEntry("X-Custom-Name", "홍길동");
+        assertThat(parsed).containsEntry("X-Description", "테스트 값 @#$%^&*()");
+        assertThat(parsed).containsEntry("X-Emoji", "✅🚀");
+    }
 }

@@ -1,3 +1,3 @@
 rootProject.name = 'msa-lab'
 
-include 'spring-cloud-gateway', 'server-a', 'server-b', 'server-c'
+include 'spring-cloud-gateway', 'server-a', 'server-b', 'server-c', 'batch-server'
