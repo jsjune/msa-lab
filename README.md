@@ -59,15 +59,18 @@ Client → Gateway → server-a /chain
 | 외부 접속 (NodePort) | `192.168.137.10:32100` (broker별: 32101, 32102, 32103) |
 | Kafka UI | `http://192.168.137.10:31180` (NodePort) |
 
-### MinIO (마스터 노드 바이너리 설치)
+### MinIO (K8s StatefulSet)
 
 | 항목 | 값 |
 |------|-----|
-| 설치 위치 | master-1 (`192.168.137.10`) |
-| 설치 방법 | `wget https://dl.min.io/server/minio/release/linux-amd64/minio` |
-| API | `http://192.168.137.10:9000` |
-| Console | `http://192.168.137.10:9001` |
-| 기본 계정 | `minioadmin` / `minioadmin` |
+| 배포 방식 | StatefulSet (`minio-0`) in `default` namespace |
+| 이미지 | `minio/minio:latest` |
+| 스토리지 | 20Gi PVC (`nfs-data-sc` StorageClass) |
+| 내부 접속 (API) | `minio:9000` (ClusterIP) |
+| 내부 접속 (Console) | `minio:9001` (ClusterIP) |
+| 외부 접속 (API) | `http://192.168.137.10:30900` (NodePort) |
+| 외부 접속 (Console) | `http://192.168.137.10:30901` (NodePort) |
+| 인증 정보 | K8s Secret `minio-secret` |
 
 ### 모니터링
 
@@ -108,7 +111,7 @@ kubectl apply -f k8s/
 | `gateway.routes.server-{a,b,c}.uri` | `SERVER_{A,B,C}_URL` | `http://localhost:808{1,2,3}` |
 | `gateway.logs.storage.type` | - | `minio` |
 | `gateway.logs.storage.bucket` | `LOG_BUCKET` | `gateway-logs` |
-| `gateway.logs.minio.endpoint` | `MINIO_ENDPOINT` | `http://192.168.137.10:9000` |
+| `gateway.logs.minio.endpoint` | `MINIO_ENDPOINT` | `http://192.168.137.10:30900` |
 | `gateway.logs.minio.{access,secret}-key` | `MINIO_{ACCESS,SECRET}_KEY` | `minioadmin` |
 | `spring.kafka.bootstrap-servers` | `KAFKA_SERVERS` | `192.168.137.10:32100` |
 
@@ -136,4 +139,4 @@ kubectl apply -f k8s/
 
 - Java 21, Spring Boot 4.0.2, Spring Cloud 2025.1.0
 - Spring Cloud Gateway (WebFlux), Spring Kafka, MinIO SDK 8.6.0
-- Strimzi (Kafka on K8s), MinIO (standalone)
+- Strimzi (Kafka on K8s), MinIO (K8s StatefulSet)

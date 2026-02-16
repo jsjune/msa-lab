@@ -38,7 +38,7 @@ spec:
             - name: KAFKA_SERVERS
               value: "df-cluster-kafka-bootstrap:9092"
             - name: MINIO_ENDPOINT
-              value: "http://192.168.137.10:9000"
+              value: "minio-0.minio-headless:9000"
             - name: MINIO_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
