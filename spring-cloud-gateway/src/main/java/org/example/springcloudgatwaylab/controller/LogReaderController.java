@@ -20,10 +20,23 @@ import java.util.Map;
 public class LogReaderController {
 
     private final MinioAsyncClient minioClient;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     public LogReaderController(MinioAsyncClient minioClient) {
         this.minioClient = minioClient;
+    }
+
+    record BodyUrlParts(String bucket, String objectPrefix) {}
+
+    static BodyUrlParts parseBodyUrl(String bodyUrl) {
+        String withoutScheme = bodyUrl.replaceFirst("^s3://", "");
+        int firstSlash = withoutScheme.indexOf('/');
+        if (firstSlash < 0) {
+            return null;
+        }
+        return new BodyUrlParts(
+                withoutScheme.substring(0, firstSlash),
+                withoutScheme.substring(firstSlash + 1));
     }
 
     /**
@@ -36,14 +49,12 @@ public class LogReaderController {
      */
     @GetMapping("/body")
     public Mono<ResponseEntity<Map<String, Object>>> getLogByBodyUrl(@RequestParam String bodyUrl) {
-        // s3://gateway-logs/2026/02/15/{txId} 파싱
-        String withoutScheme = bodyUrl.replaceFirst("^s3://", "");
-        int firstSlash = withoutScheme.indexOf('/');
-        if (firstSlash < 0) {
+        BodyUrlParts parts = parseBodyUrl(bodyUrl);
+        if (parts == null) {
             return Mono.just(ResponseEntity.badRequest().body(Map.of("error", "invalid bodyUrl format")));
         }
-        String bucket = withoutScheme.substring(0, firstSlash);
-        String objectPrefix = withoutScheme.substring(firstSlash + 1);
+        String bucket = parts.bucket();
+        String objectPrefix = parts.objectPrefix();
 
         Mono<String> reqBody = fetchObject(bucket, objectPrefix + ".req");
         Mono<String> resBody = fetchObject(bucket, objectPrefix + ".res");
@@ -60,7 +71,7 @@ public class LogReaderController {
                 .onErrorResume(e -> Mono.just(ResponseEntity.notFound().build()));
     }
 
-    private Object parseJson(String raw) {
+    static Object parseJson(String raw) {
         if (raw == null || raw.isBlank()) {
             return null;
         }
