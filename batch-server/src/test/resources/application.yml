@@ -1,0 +1,31 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP_ID:log-batch-consumer}
+      max-poll-records: ${KAFKA_MAX_POLL_RECORDS:500}
+      auto-offset-reset: earliest
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+
+batch:
+  metadata:
+    enabled: ${BATCH_METADATA_ENABLED:true}
+    topic: ${BATCH_METADATA_TOPIC:gateway-meta-logs}
+  body:
+    enabled: ${BATCH_BODY_ENABLED:true}
+    fixed-delay: ${BATCH_BODY_FIXED_DELAY:30000}
+    batch-size: ${BATCH_BODY_BATCH_SIZE:100}
