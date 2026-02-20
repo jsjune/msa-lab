@@ -13,6 +13,8 @@ spec:
     metadata:
       labels:
         app: server-a
+      annotations:
+        sidecar.istio.io/inject: "true"
     spec:
       containers:
         - name: server-a
@@ -52,5 +54,6 @@ spec:
   selector:
     app: server-a
   ports:
-    - port: 8081
+    - name: http
+      port: 8081
       targetPort: 8081

@@ -1,0 +1,17 @@
+server:
+  port: ${SERVER_PORT:9000}
+
+spring:
+  application:
+    name: admin-server
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://192.168.137.10:30543/testdb}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:1234}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: ${JPA_DDL_AUTO:update}
+    properties:
+      hibernate:
+        format_sql: true

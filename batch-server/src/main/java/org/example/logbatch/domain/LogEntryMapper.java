@@ -2,6 +2,7 @@ package org.example.logbatch.domain;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -103,7 +104,12 @@ public final class LogEntryMapper {
         try {
             return Instant.parse(timestamp);
         } catch (Exception e) {
-            return null;
+            // 타임존 없는 포맷 (yyyy-MM-dd'T'HH:mm:ss.SSS) — 시각 그대로 보존 (UTC 오프셋 없이 저장)
+            try {
+                return LocalDateTime.parse(timestamp).toInstant(java.time.ZoneOffset.UTC);
+            } catch (Exception ex) {
+                return null;
+            }
         }
     }
 

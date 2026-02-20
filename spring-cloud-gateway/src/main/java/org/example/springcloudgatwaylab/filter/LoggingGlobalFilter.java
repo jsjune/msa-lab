@@ -30,6 +30,8 @@ import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -43,6 +45,8 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
     private static final ObjectMapper objectMapper = new ObjectMapper();
     private static final String HOP_KEY_PREFIX = "hop:";
     private static final Duration HOP_KEY_TTL = Duration.ofMinutes(5);
+    private static final DateTimeFormatter KST_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS").withZone(ZoneId.of("Asia/Seoul"));
 
     /**
      * Body가 없는 HTTP 메서드 집합.
@@ -223,8 +227,8 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
         metadata.put("target", targetUrl != null ? targetUrl.toString() : "");
         metadata.put("duration", duration + "ms");
         metadata.put("status", statusCode != null ? statusCode.value() : 0);
-        metadata.put("reqTime", Instant.ofEpochMilli(startTime).toString());
-        metadata.put("resTime", Instant.ofEpochMilli(endTime).toString());
+        metadata.put("reqTime", KST_FORMATTER.format(Instant.ofEpochMilli(startTime)));
+        metadata.put("resTime", KST_FORMATTER.format(Instant.ofEpochMilli(endTime)));
         metadata.put("bodyUrl", bodyUrl);
 
         if (isError) {

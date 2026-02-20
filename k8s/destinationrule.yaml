@@ -1,0 +1,10 @@
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: spring-cloud-gateway-dr
+  namespace: default
+spec:
+  host: spring-cloud-gateway
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL

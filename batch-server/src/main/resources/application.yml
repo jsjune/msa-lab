@@ -5,26 +5,25 @@ spring:
   application:
     name: batch-server
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/logbatch}
+    url: ${DB_URL:jdbc:postgresql://192.168.137.10:30543/testdb}
     username: ${DB_USERNAME:postgres}
-    password: ${DB_PASSWORD:postgres}
+    password: ${DB_PASSWORD:1234}
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
-      ddl-auto: ${JPA_DDL_AUTO:validate}
+      ddl-auto: ${JPA_DDL_AUTO:update}
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
         format_sql: true
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:192.168.137.10:32100}
     consumer:
       group-id: ${KAFKA_CONSUMER_GROUP_ID:log-batch-consumer}
       max-poll-records: ${KAFKA_MAX_POLL_RECORDS:500}
       auto-offset-reset: earliest
 
 minio:
-  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+  endpoint: ${MINIO_ENDPOINT:http://192.168.137.10:30900}
   access-key: ${MINIO_ACCESS_KEY:minioadmin}
   secret-key: ${MINIO_SECRET_KEY:minioadmin}
 
@@ -34,5 +33,10 @@ batch:
     topic: ${BATCH_METADATA_TOPIC:gateway-meta-logs}
   body:
     enabled: ${BATCH_BODY_ENABLED:true}
-    fixed-delay: ${BATCH_BODY_FIXED_DELAY:30000}
+    fixed-delay: ${BATCH_BODY_FIXED_DELAY:5000}
     batch-size: ${BATCH_BODY_BATCH_SIZE:100}
+
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    org.example.springcloudgatwaylab: ${LOG_LEVEL_APP:DEBUG}
