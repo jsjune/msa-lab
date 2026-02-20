@@ -1,44 +1,41 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: spring-cloud-gateway
+  name: batch-server
   labels:
-    app: spring-cloud-gateway
+    app: batch-server
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: spring-cloud-gateway
+      app: batch-server
   template:
     metadata:
       labels:
-        app: spring-cloud-gateway
+        app: batch-server
       annotations:
         sidecar.istio.io/inject: "true"
     spec:
-      dnsConfig:
-        searches:
-          - redis-cluster-leader-headless.default.svc.cluster.local
       containers:
-        - name: spring-cloud-gateway
-          image: master-1:30002/project/spring-cloud-gateway:20260220-164033
+        - name: batch-server
+          image: master-1:30002/project/batch-server:20260220-163858
           ports:
-            - containerPort: 8000
+            - containerPort: 8090
           env:
-            - name: SPRING_PROFILES_ACTIVE
-              value: "k8s"
-            - name: SERVER_A_URL
-              value: "http://server-a:8081"
-            - name: SERVER_B_URL
-              value: "http://server-b:8082"
-            - name: SERVER_C_URL
-              value: "http://server-c:8083"
-            - name: REDIS_DYNAMIC_REFRESH
-              value: "false"
-            - name: REDIS_CLUSTER_NODES
-              value: "redis-cluster-leader-0.redis-cluster-leader-headless:6379,redis-cluster-leader-1.redis-cluster-leader-headless:6379,redis-cluster-leader-2.redis-cluster-leader-headless:6379"
-            - name: KAFKA_SERVERS
+            - name: DB_URL
+              value: "jdbc:postgresql://postgres-0.postgres-headless-service:5432/testdb"
+            - name: DB_USERNAME
+              value: "postgres"
+            - name: DB_PASSWORD
+              value: "1234"
+            - name: JPA_DDL_AUTO
+              value: "update"
+            - name: KAFKA_BOOTSTRAP_SERVERS
               value: "df-cluster-kafka-bootstrap:9092"
+            - name: KAFKA_CONSUMER_GROUP_ID
+              value: "log-batch-consumer"
+            - name: KAFKA_MAX_POLL_RECORDS
+              value: "500"
             - name: MINIO_ENDPOINT
               value: "http://minio-0.minio-headless:9000"
             - name: MINIO_ACCESS_KEY
@@ -51,6 +48,18 @@ spec:
                 secretKeyRef:
                   name: minio-credentials
                   key: secret-key
+            - name: BATCH_METADATA_ENABLED
+              value: "true"
+            - name: BATCH_METADATA_TOPIC
+              value: "gateway-meta-logs"
+            - name: BATCH_BODY_ENABLED
+              value: "true"
+            - name: BATCH_BODY_FIXED_DELAY
+              value: "5000"
+            - name: BATCH_BODY_BATCH_SIZE
+              value: "100"
+            - name: BATCH_BODY_MAX_RETRIES
+              value: "3"
             - name: LOG_LEVEL_ROOT
               value: "INFO"
             - name: LOG_LEVEL_APP
@@ -58,20 +67,20 @@ spec:
           startupProbe:
             httpGet:
               path: /actuator/health/liveness
-              port: 8000
-            initialDelaySeconds: 10
+              port: 8090
+            initialDelaySeconds: 15
             periodSeconds: 5
             failureThreshold: 12
           livenessProbe:
             httpGet:
               path: /actuator/health/liveness
-              port: 8000
+              port: 8090
             periodSeconds: 15
             failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /actuator/health/readiness
-              port: 8000
+              port: 8090
             periodSeconds: 10
             failureThreshold: 3
           resources:
@@ -85,12 +94,12 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: spring-cloud-gateway
+  name: batch-server
 spec:
   type: ClusterIP
   selector:
-    app: spring-cloud-gateway
+    app: batch-server
   ports:
     - name: http
-      port: 8000
-      targetPort: 8000
+      port: 8090
+      targetPort: 8090

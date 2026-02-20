@@ -19,7 +19,8 @@ public class MetadataKafkaListener {
 
     @KafkaListener(
             topics = "${batch.metadata.topic:gateway-meta-logs}",
-            batch = "true"
+            batch = "true",
+            concurrency = "3"
     )
     public void onMessage(List<String> messages, Acknowledgment ack) {
         log.debug("Received {} messages from Kafka", messages.size());

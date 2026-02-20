@@ -36,14 +36,17 @@ public class BatchProperties {
         private final boolean enabled;
         private final long fixedDelay;
         private final int batchSize;
+        private final int maxRetries;
 
         public BodyProperties(
                 @DefaultValue("true") boolean enabled,
                 @DefaultValue("30000") long fixedDelay,
-                @DefaultValue("100") int batchSize) {
+                @DefaultValue("100") int batchSize,
+                @DefaultValue("3") int maxRetries) {
             this.enabled = enabled;
             this.fixedDelay = fixedDelay;
             this.batchSize = batchSize;
+            this.maxRetries = maxRetries;
         }
     }
 }

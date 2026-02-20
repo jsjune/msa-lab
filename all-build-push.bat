@@ -22,7 +22,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-for %%M in (spring-cloud-gateway server-a server-b server-c) do (
+for %%M in (spring-cloud-gateway server-a server-b server-c batch-server admin-server) do (
     set MODULE=%%M
     set IMAGE=%REGISTRY%/%%M:!TAG!
 

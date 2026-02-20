@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gateway Admin</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+    <nav class="nav">
+        <h1 class="nav-title">Gateway Admin</h1>
+        <div class="nav-links">
+            <a href="#" class="nav-link active" data-page="stats">API Stats</a>
+            <a href="#" class="nav-link" data-page="traces">Traces</a>
+            <a href="#" class="nav-link" data-page="policies">Policies</a>
+        </div>
+    </nav>
+
+    <main id="app"></main>
+
+    <script src="/js/app.js"></script>
+    <script src="/js/stats.js"></script>
+    <script src="/js/traces.js"></script>
+    <script src="/js/policies.js"></script>
+</body>
+</html>

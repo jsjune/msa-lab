@@ -22,6 +22,10 @@ public class TraceHop implements Comparable<TraceHop> {
     private Instant reqTime;
     private Instant resTime;
     private String error;
+    private String requestHeaders;
+    private String requestBody;
+    private String responseHeaders;
+    private String responseBody;
 
     @Override
     public int compareTo(TraceHop other) {

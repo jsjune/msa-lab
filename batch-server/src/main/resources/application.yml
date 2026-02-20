@@ -35,8 +35,9 @@ batch:
     enabled: ${BATCH_BODY_ENABLED:true}
     fixed-delay: ${BATCH_BODY_FIXED_DELAY:5000}
     batch-size: ${BATCH_BODY_BATCH_SIZE:100}
+    max-retries: ${BATCH_BODY_MAX_RETRIES:3}
 
 logging:
   level:
     root: ${LOG_LEVEL_ROOT:INFO}
-    org.example.springcloudgatwaylab: ${LOG_LEVEL_APP:DEBUG}
+    org.example.springcloudgatwaylab: ${LOG_LEVEL_APP:INFO}

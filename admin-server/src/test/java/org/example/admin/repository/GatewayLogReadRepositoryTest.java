@@ -180,15 +180,17 @@ class GatewayLogReadRepositoryTest {
     // === 3.4 분산추적 검색 ===
 
     @Test
-    @DisplayName("기간 내 txId 목록 조회 — 페이징")
+    @DisplayName("기간 내 txId + reqTime 목록 조회 — 페이징")
     void findDistinctTxIds_paged() {
         Instant from = BASE_TIME.minusSeconds(10);
         Instant to = BASE_TIME.plusSeconds(300);
 
-        Page<String> page = repository.findDistinctTxIds(from, to, PageRequest.of(0, 2));
+        Page<TraceSummaryProjection> page = repository.findDistinctTxIds(from, to, PageRequest.of(0, 2));
 
         assertThat(page.getTotalElements()).isEqualTo(4);
         assertThat(page.getContent()).hasSize(2);
+        assertThat(page.getContent().getFirst().getTxId()).isNotNull();
+        assertThat(page.getContent().getFirst().getReqTime()).isNotNull();
     }
 
     @Test
@@ -197,9 +199,63 @@ class GatewayLogReadRepositoryTest {
         Instant from = BASE_TIME.minusSeconds(10);
         Instant to = BASE_TIME.plusSeconds(300);
 
-        Page<String> page = repository.findDistinctTxIdsByPath(from, to, "/server-b/data", PageRequest.of(0, 10));
+        Page<TraceSummaryProjection> page = repository.findDistinctTxIdsByPath(from, to, "/server-b/data", PageRequest.of(0, 10));
 
-        assertThat(page.getContent()).containsExactly("tx-4");
+        assertThat(page.getContent()).extracting(TraceSummaryProjection::getTxId).containsExactly("tx-4");
+    }
+
+    // === 3.6 서비스 그래프 쿼리 ===
+
+    @Test
+    @DisplayName("서비스 그래프 쿼리 — null durationMs 행은 결과에서 제외")
+    void findHopRawData_nullDurationExcluded() {
+        em.persist(GatewayLog.builder()
+                .txId("tx-null-dur").hop(1).path("/server-a/chain")
+                .status(200).durationMs(null)
+                .reqTime(BASE_TIME.plusSeconds(10))
+                .partitionDay(20).build());
+        em.flush();
+        em.clear();
+
+        Instant from = BASE_TIME.minusSeconds(10);
+        Instant to = BASE_TIME.plusSeconds(300);
+
+        List<HopRawProjection> rows = repository.findHopRawData(from, to);
+
+        assertThat(rows).extracting(HopRawProjection::getTxId)
+                .doesNotContain("tx-null-dur");
+    }
+
+    @Test
+    @DisplayName("서비스 그래프 쿼리 기간 필터 적용 — 범위 밖 hop 제외")
+    void findHopRawData_periodFilter() {
+        // BASE_TIME+61s ~ BASE_TIME+130s → tx-2(60s 제외), tx-3(120s 포함)만
+        Instant from = BASE_TIME.plusSeconds(61);
+        Instant to = BASE_TIME.plusSeconds(130);
+
+        List<HopRawProjection> rows = repository.findHopRawData(from, to);
+
+        assertThat(rows).extracting(HopRawProjection::getTxId)
+                .containsOnly("tx-3");
+    }
+
+    @Test
+    @DisplayName("기간 내 hop 원시 데이터 목록 조회 — txId, hop, path, status, durationMs 반환")
+    void findHopRawData_returnsExpectedFields() {
+        Instant from = BASE_TIME.minusSeconds(10);
+        Instant to = BASE_TIME.plusSeconds(300);
+
+        List<HopRawProjection> rows = repository.findHopRawData(from, to);
+
+        assertThat(rows).isNotEmpty();
+        HopRawProjection first = rows.stream()
+                .filter(r -> "tx-1".equals(r.getTxId()) && r.getHop() == 1)
+                .findFirst().orElseThrow();
+        assertThat(first.getTxId()).isEqualTo("tx-1");
+        assertThat(first.getHop()).isEqualTo(1);
+        assertThat(first.getPath()).isEqualTo("/server-a/chain");
+        assertThat(first.getStatus()).isEqualTo(200);
+        assertThat(first.getDurationMs()).isEqualTo(100L);
     }
 
     @Test
@@ -208,8 +264,9 @@ class GatewayLogReadRepositoryTest {
         Instant from = BASE_TIME.minusSeconds(10);
         Instant to = BASE_TIME.plusSeconds(300);
 
-        Page<String> page = repository.findDistinctTxIdsByError(from, to, PageRequest.of(0, 10));
+        Page<TraceSummaryProjection> page = repository.findDistinctTxIdsByError(from, to, PageRequest.of(0, 10));
 
-        assertThat(page.getContent()).containsExactlyInAnyOrder("tx-2", "tx-4");
+        assertThat(page.getContent()).extracting(TraceSummaryProjection::getTxId)
+                .containsExactlyInAnyOrder("tx-2", "tx-4");
     }
 }

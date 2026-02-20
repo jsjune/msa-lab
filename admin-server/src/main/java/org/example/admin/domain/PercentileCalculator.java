@@ -26,6 +26,10 @@ public class PercentileCalculator {
         return Math.round(sorted.get(lower) + fraction * (sorted.get(upper) - sorted.get(lower)));
     }
 
+    public static Long p30(List<Long> values) {
+        return calculate(values, 30);
+    }
+
     public static Long p50(List<Long> values) {
         return calculate(values, 50);
     }

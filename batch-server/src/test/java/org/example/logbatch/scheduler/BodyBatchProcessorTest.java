@@ -20,6 +20,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -46,12 +47,13 @@ class BodyBatchProcessorTest {
     private BodyBatchProcessor processor;
 
     private static final int BATCH_SIZE = 100;
+    private static final int MAX_RETRIES = 3;
 
     @BeforeEach
     void setUp() {
         BatchProperties batchProperties = new BatchProperties(
                 new BatchProperties.MetadataProperties(true, "gateway-meta-logs"),
-                new BatchProperties.BodyProperties(true, 30000, BATCH_SIZE));
+                new BatchProperties.BodyProperties(true, 30000, BATCH_SIZE, MAX_RETRIES));
         processor = new BodyBatchProcessor(
                 gatewayLogRepository, gatewayLogBodyRepository,
                 bodyCollectionService, minioLogFetcher, batchProperties);
@@ -74,7 +76,7 @@ class BodyBatchProcessorTest {
     @DisplayName("바디 미수집 로그 조회 → MinIO fetch → GatewayLogBody 저장")
     void processBodyBatch_collectsBodyFromDb() {
         GatewayLog log = createLog("tx-1", 1, "/server-a/hello");
-        when(gatewayLogRepository.findLogsNeedingBodyCollection(PageRequest.of(0, BATCH_SIZE)))
+        when(gatewayLogRepository.findLogsNeedingBodyCollection(MAX_RETRIES, PageRequest.of(0, BATCH_SIZE)))
                 .thenReturn(List.of(log));
         when(bodyCollectionService.shouldCollectBody("/server-a/hello")).thenReturn(true);
         when(minioLogFetcher.fetchAllByBodyUrl(log.getBodyUrl()))
@@ -88,7 +90,7 @@ class BodyBatchProcessorTest {
     @Test
     @DisplayName("바디 미수집 로그 없음 → MinIO 호출 안 함")
     void processBodyBatch_noLogsNeedingBody_noMinioCall() {
-        when(gatewayLogRepository.findLogsNeedingBodyCollection(PageRequest.of(0, BATCH_SIZE)))
+        when(gatewayLogRepository.findLogsNeedingBodyCollection(MAX_RETRIES, PageRequest.of(0, BATCH_SIZE)))
                 .thenReturn(Collections.emptyList());
 
         processor.processBodyBatch();
@@ -101,7 +103,7 @@ class BodyBatchProcessorTest {
     @DisplayName("정책에 의해 비활성화된 path → MinIO 호출 안 함, body 저장 안 함")
     void processBodyBatch_policyDisabled_skipped() {
         GatewayLog log = createLog("tx-1", 1, "/server-b/data");
-        when(gatewayLogRepository.findLogsNeedingBodyCollection(PageRequest.of(0, BATCH_SIZE)))
+        when(gatewayLogRepository.findLogsNeedingBodyCollection(MAX_RETRIES, PageRequest.of(0, BATCH_SIZE)))
                 .thenReturn(List.of(log));
         when(bodyCollectionService.shouldCollectBody("/server-b/data")).thenReturn(false);
 
@@ -112,10 +114,10 @@ class BodyBatchProcessorTest {
     }
 
     @Test
-    @DisplayName("MinIO 조회 실패 (모든 값 null) → body 저장 안 함")
+    @DisplayName("MinIO 조회 실패 (모든 값 null) → body 저장 안 함, retryCount 증가")
     void processBodyBatch_minioFailure_noBodySaved() {
         GatewayLog log = createLog("tx-1", 1, "/server-a/hello");
-        when(gatewayLogRepository.findLogsNeedingBodyCollection(PageRequest.of(0, BATCH_SIZE)))
+        when(gatewayLogRepository.findLogsNeedingBodyCollection(MAX_RETRIES, PageRequest.of(0, BATCH_SIZE)))
                 .thenReturn(List.of(log));
         when(bodyCollectionService.shouldCollectBody("/server-a/hello")).thenReturn(true);
         when(minioLogFetcher.fetchAllByBodyUrl(anyString()))
@@ -124,6 +126,8 @@ class BodyBatchProcessorTest {
         processor.processBodyBatch();
 
         verify(gatewayLogBodyRepository, never()).save(any(GatewayLogBody.class));
+        verify(gatewayLogRepository).save(log);
+        assertThat(log.getBodyRetryCount()).isEqualTo(1);
     }
 
     @Test
@@ -131,7 +135,7 @@ class BodyBatchProcessorTest {
     void processBodyBatch_mixedPolicies_handledCorrectly() {
         GatewayLog enabled = createLog("tx-1", 1, "/server-a/hello");
         GatewayLog disabled = createLog("tx-2", 1, "/server-b/data");
-        when(gatewayLogRepository.findLogsNeedingBodyCollection(PageRequest.of(0, BATCH_SIZE)))
+        when(gatewayLogRepository.findLogsNeedingBodyCollection(MAX_RETRIES, PageRequest.of(0, BATCH_SIZE)))
                 .thenReturn(List.of(enabled, disabled));
         when(bodyCollectionService.shouldCollectBody("/server-a/hello")).thenReturn(true);
         when(bodyCollectionService.shouldCollectBody("/server-b/data")).thenReturn(false);
@@ -151,7 +155,7 @@ class BodyBatchProcessorTest {
     @DisplayName("이전 배치가 완료되지 않으면 다음 실행 건너뜀")
     void concurrentExecution_skipped() {
         GatewayLog log = createLog("tx-1", 1, "/server-a/hello");
-        when(gatewayLogRepository.findLogsNeedingBodyCollection(any()))
+        when(gatewayLogRepository.findLogsNeedingBodyCollection(eq(MAX_RETRIES), any()))
                 .thenReturn(List.of(log));
         when(bodyCollectionService.shouldCollectBody(anyString())).thenReturn(true);
         when(minioLogFetcher.fetchAllByBodyUrl(anyString())).thenAnswer(invocation -> {
@@ -170,7 +174,7 @@ class BodyBatchProcessorTest {
     @Test
     @DisplayName("배치 시작 시 정책 캐시 갱신, 종료 시 캐시 클리어")
     void processBodyBatch_policyCacheLifecycle() {
-        when(gatewayLogRepository.findLogsNeedingBodyCollection(PageRequest.of(0, BATCH_SIZE)))
+        when(gatewayLogRepository.findLogsNeedingBodyCollection(MAX_RETRIES, PageRequest.of(0, BATCH_SIZE)))
                 .thenReturn(Collections.emptyList());
 
         processor.processBodyBatch();

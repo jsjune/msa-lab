@@ -1,0 +1,10 @@
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: admin-dr
+  namespace: default
+spec:
+  host: admin-server
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL

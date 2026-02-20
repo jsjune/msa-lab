@@ -63,6 +63,14 @@ public class GatewayLog {
     @Column(name = "partition_day", nullable = false)
     private int partitionDay;
 
-    @OneToOne(mappedBy = "gatewayLog", fetch = FetchType.LAZY)
+    @Builder.Default
+    @Column(name = "body_retry_count", nullable = false)
+    private int bodyRetryCount = 0;
+
+    @OneToOne(mappedBy = "gatewayLog")
     private GatewayLogBody body;
+
+    public void incrementBodyRetryCount() {
+        this.bodyRetryCount++;
+    }
 }

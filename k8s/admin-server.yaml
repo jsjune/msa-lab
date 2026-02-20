@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-server
+  labels:
+    app: admin-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-server
+  template:
+    metadata:
+      labels:
+        app: admin-server
+      annotations:
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+        - name: admin-server
+          image: master-1:30002/project/admin-server:20260220-163724
+          ports:
+            - containerPort: 9000
+          env:
+            - name: DB_URL
+              value: "jdbc:postgresql://postgres-0.postgres-headless-service:5432/testdb"
+            - name: DB_USERNAME
+              value: "postgres"
+            - name: DB_PASSWORD
+              value: "1234"
+            - name: JPA_DDL_AUTO
+              value: "update"
+            - name: LOG_LEVEL_ROOT
+              value: "INFO"
+            - name: LOG_LEVEL_APP
+              value: "INFO"
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 9000
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 9000
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-server
+spec:
+  type: ClusterIP
+  selector:
+    app: admin-server
+  ports:
+    - name: http
+      port: 9000
+      targetPort: 9000

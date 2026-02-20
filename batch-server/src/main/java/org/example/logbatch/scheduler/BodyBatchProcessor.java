@@ -47,8 +47,9 @@ public class BodyBatchProcessor {
             bodyCollectionService.refreshPolicyCache();
 
             int batchSize = batchProperties.getBody().getBatchSize();
+            int maxRetries = batchProperties.getBody().getMaxRetries();
             List<GatewayLog> logsNeedingBody =
-                    gatewayLogRepository.findLogsNeedingBodyCollection(PageRequest.of(0, batchSize));
+                    gatewayLogRepository.findLogsNeedingBodyCollection(maxRetries, PageRequest.of(0, batchSize));
 
             if (logsNeedingBody.isEmpty()) {
                 return;
@@ -63,7 +64,11 @@ public class BodyBatchProcessor {
                 switch (result) {
                     case COLLECTED -> collected++;
                     case SKIPPED -> skipped++;
-                    case MINIO_FAILED -> failed++;
+                    case MINIO_FAILED -> {
+                        failed++;
+                        gatewayLog.incrementBodyRetryCount();
+                        gatewayLogRepository.save(gatewayLog);
+                    }
                 }
             }
 

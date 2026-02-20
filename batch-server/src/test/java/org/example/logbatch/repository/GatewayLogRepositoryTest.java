@@ -283,7 +283,7 @@ class GatewayLogRepositoryTest {
         entityManager.flush();
         entityManager.clear();
 
-        List<GatewayLog> result = gatewayLogRepository.findLogsNeedingBodyCollection(PageRequest.of(0, 100));
+        List<GatewayLog> result = gatewayLogRepository.findLogsNeedingBodyCollection(3, PageRequest.of(0, 100));
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getTxId()).isEqualTo("needs-body");
@@ -297,9 +297,30 @@ class GatewayLogRepositoryTest {
             gatewayLogRepository.save(createLog("batch-" + i, 1, 200, reqTime));
         }
 
-        List<GatewayLog> result = gatewayLogRepository.findLogsNeedingBodyCollection(PageRequest.of(0, 3));
+        List<GatewayLog> result = gatewayLogRepository.findLogsNeedingBodyCollection(3, PageRequest.of(0, 3));
 
         assertThat(result).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("bodyRetryCount가 maxRetries 이상이면 후보에서 제외")
+    void findLogsNeedingBodyCollection_excludesExceededRetries() {
+        Instant reqTime = Instant.parse("2026-02-17T10:00:00Z");
+        gatewayLogRepository.save(createLog("retry-ok", 1, 200, reqTime));
+
+        GatewayLog exhaustedLog = createLog("retry-exceeded", 1, 200, reqTime);
+        exhaustedLog.incrementBodyRetryCount();
+        exhaustedLog.incrementBodyRetryCount();
+        exhaustedLog.incrementBodyRetryCount(); // retryCount = 3
+        gatewayLogRepository.save(exhaustedLog);
+
+        entityManager.flush();
+        entityManager.clear();
+
+        List<GatewayLog> result = gatewayLogRepository.findLogsNeedingBodyCollection(3, PageRequest.of(0, 100));
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getTxId()).isEqualTo("retry-ok");
     }
 
     @Test

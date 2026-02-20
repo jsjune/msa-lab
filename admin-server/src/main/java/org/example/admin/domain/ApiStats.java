@@ -21,6 +21,7 @@ public class ApiStats {
     private Long avg;
     private Long min;
     private Long max;
+    private Long p30;
     private Long p50;
     private Long p75;
     private Long p90;

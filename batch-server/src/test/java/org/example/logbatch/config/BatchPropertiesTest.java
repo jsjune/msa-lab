@@ -22,7 +22,7 @@ class BatchPropertiesTest {
     @DisplayName("body 기본값: enabled=true, fixedDelay=30000ms, batchSize=100")
     void body_defaultValues() {
         BatchProperties.BodyProperties body =
-                new BatchProperties.BodyProperties(true, 30000, 100);
+                new BatchProperties.BodyProperties(true, 30000, 100, 3);
 
         assertThat(body.isEnabled()).isTrue();
         assertThat(body.getFixedDelay()).isEqualTo(30000L);
@@ -42,7 +42,7 @@ class BatchPropertiesTest {
     @DisplayName("body.enabled=false로 설정 가능")
     void body_canBeDisabled() {
         BatchProperties.BodyProperties body =
-                new BatchProperties.BodyProperties(false, 30000, 100);
+                new BatchProperties.BodyProperties(false, 30000, 100, 3);
 
         assertThat(body.isEnabled()).isFalse();
     }
@@ -70,6 +70,6 @@ class BatchPropertiesTest {
     private BatchProperties createDefaultProperties() {
         return new BatchProperties(
                 new BatchProperties.MetadataProperties(true, "gateway-meta-logs"),
-                new BatchProperties.BodyProperties(true, 30000, 100));
+                new BatchProperties.BodyProperties(true, 30000, 100, 3));
     }
 }
