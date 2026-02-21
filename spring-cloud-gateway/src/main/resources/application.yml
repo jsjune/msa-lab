@@ -14,8 +14,6 @@ spring:
     timeout-per-shutdown-phase: 30s
   kafka:
     bootstrap-servers: ${KAFKA_SERVERS:192.168.137.10:32100}
-    topic:
-      metadata: gateway-meta-logs
 
 management:
   endpoint:
@@ -29,6 +27,9 @@ management:
         include: health,info
 
 gateway:
+  kafka:
+    topic:
+      metadata: ${KAFKA_TOPIC_METADATA:gateway-meta-logs}
   routes:
     server-a:
       id: ${SERVER_A_ROUTE_ID:server_a_route}
@@ -43,6 +44,8 @@ gateway:
       path: ${SERVER_C_PATH:/server-c/**}
       uri: ${SERVER_C_URL:http://localhost:8083}
   logs:
+    max-body-size-bytes: ${MAX_BODY_SIZE_BYTES:1048576}
+    skip-paths: ${LOG_SKIP_PATHS:/actuator/**}
     storage:
       type: minio # s3, minio
       bucket: ${LOG_BUCKET:gateway-logs}

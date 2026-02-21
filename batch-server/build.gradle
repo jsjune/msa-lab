@@ -5,6 +5,10 @@ dependencies {
     implementation 'org.springframework.kafka:spring-kafka'
     implementation 'io.minio:minio:8.6.0'
     implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
+    implementation 'net.javacrumbs.shedlock:shedlock-spring:7.6.0'
+    implementation 'net.javacrumbs.shedlock:shedlock-provider-jdbc-template:7.6.0'
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-database-postgresql'
 
     runtimeOnly 'org.postgresql:postgresql'
 

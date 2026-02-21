@@ -1,0 +1,2 @@
+ALTER TABLE gateway_log
+    ADD COLUMN IF NOT EXISTS body_retry_count INTEGER NOT NULL DEFAULT 0;

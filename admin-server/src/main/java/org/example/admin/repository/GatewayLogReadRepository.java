@@ -66,6 +66,10 @@ public interface GatewayLogReadRepository extends JpaRepository<GatewayLog, Long
             """)
     List<HopRawProjection> findHopRawData(@Param("from") Instant from, @Param("to") Instant to);
 
+    // 처리율 — hop=1 (외부 진입) 요청 시각 목록
+    @Query("SELECT g.reqTime FROM GatewayLog g WHERE g.reqTime BETWEEN :from AND :to AND g.hop = 1 ORDER BY g.reqTime")
+    List<Instant> findExternalRequestTimes(@Param("from") Instant from, @Param("to") Instant to);
+
     // 3.4 분산추적 검색 — 에러만 (status >= 400)
     @Query(value = "SELECT g.txId AS txId, MIN(g.reqTime) AS reqTime FROM GatewayLog g WHERE g.reqTime BETWEEN :from AND :to AND g.status >= 400 GROUP BY g.txId ORDER BY MIN(g.reqTime) DESC",
            countQuery = "SELECT COUNT(DISTINCT g.txId) FROM GatewayLog g WHERE g.reqTime BETWEEN :from AND :to AND g.status >= 400")

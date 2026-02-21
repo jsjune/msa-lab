@@ -3,39 +3,36 @@ package org.example.springcloudgatwaylab.filter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.springcloudgatwaylab.service.KafkaMetadataSender;
 import org.example.springcloudgatwaylab.service.LogStorageService;
-import org.jetbrains.annotations.NotNull;
-import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
 import org.springframework.core.Ordered;
-import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.server.reactive.ServerHttpRequest;
-import org.springframework.http.server.reactive.ServerHttpRequestDecorator;
-import org.springframework.http.server.reactive.ServerHttpResponse;
-import org.springframework.http.server.reactive.ServerHttpResponseDecorator;
 import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
 import org.springframework.web.server.ServerWebExchange;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 @Component
 public class LoggingGlobalFilter implements GlobalFilter, Ordered {
@@ -43,18 +40,11 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
     private static final Logger logger = LoggerFactory.getLogger(LoggingGlobalFilter.class);
     private static final String ERROR_ATTRIBUTE = "LOG_ERROR_MSG";
     private static final ObjectMapper objectMapper = new ObjectMapper();
-    private static final String HOP_KEY_PREFIX = "hop:";
-    private static final Duration HOP_KEY_TTL = Duration.ofMinutes(5);
     private static final DateTimeFormatter KST_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS").withZone(ZoneId.of("Asia/Seoul"));
-
-    /**
-     * Body가 없는 HTTP 메서드 집합.
-     * 이 메서드들은 request body 업로드를 건너뛴다.
-     */
     private static final Set<HttpMethod> BODY_LESS_METHODS = Set.of(
-            HttpMethod.GET, HttpMethod.HEAD, HttpMethod.DELETE, HttpMethod.OPTIONS, HttpMethod.TRACE
-    );
+            HttpMethod.GET, HttpMethod.HEAD, HttpMethod.DELETE, HttpMethod.OPTIONS, HttpMethod.TRACE);
+    private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
 
     static boolean hasBody(HttpMethod method) {
         return !BODY_LESS_METHODS.contains(method);
@@ -62,178 +52,142 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
 
     private final LogStorageService storageService;
     private final KafkaMetadataSender metadataSender;
-    private final ReactiveStringRedisTemplate redisTemplate;
+    private final HopTracker hopTracker;
+    final int maxBodySizeBytes;
+    private final List<String> skipPaths;
 
     public LoggingGlobalFilter(LogStorageService storageService,
                                KafkaMetadataSender metadataSender,
-                               ReactiveStringRedisTemplate redisTemplate) {
+                               HopTracker hopTracker,
+                               @Value("${gateway.logs.max-body-size-bytes:1048576}") int maxBodySizeBytes,
+                               @Value("${gateway.logs.skip-paths:/actuator/**}") String skipPathsConfig) {
         this.storageService = storageService;
         this.metadataSender = metadataSender;
-        this.redisTemplate = redisTemplate;
+        this.hopTracker = hopTracker;
+        this.maxBodySizeBytes = maxBodySizeBytes;
+        this.skipPaths = Arrays.stream(skipPathsConfig.split(","))
+                .map(String::trim).filter(p -> !p.isEmpty()).collect(Collectors.toList());
     }
 
-    @NotNull
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        final String path = exchange.getRequest().getURI().getPath();
+        if (skipPaths.stream().anyMatch(pattern -> PATH_MATCHER.match(pattern, path))) {
+            return chain.filter(exchange);
+        }
+
         long startTime = System.currentTimeMillis();
         String txId = exchange.getRequest().getHeaders().getFirst("X-Tx-Id");
         boolean isNewTx = (txId == null);
         if (isNewTx) txId = UUID.randomUUID().toString();
-
         final String finalTxId = txId;
-        final String hopKey = HOP_KEY_PREFIX + finalTxId;
-        final String path = exchange.getRequest().getURI().getPath();
         final HttpMethod method = exchange.getRequest().getMethod();
 
-        // Redis INCR로 hop 원자적 증가 → 이후 필터 체인 실행
-        return redisTemplate.opsForValue().increment(hopKey)
-                .flatMap(hopLong ->
-                        // TTL 설정 (키 누수 방지)
-                        redisTemplate.expire(hopKey, HOP_KEY_TTL)
-                                .onErrorResume(e -> {
-                                    logger.warn("Failed to set TTL for hop key: {}", hopKey, e);
-                                    return Mono.just(true);
-                                })
-                                .thenReturn(hopLong)
-                )
-                .onErrorResume(e -> {
-                    logger.warn("Redis unavailable, using default hop=0: txId={}", finalTxId, e);
-                    return Mono.just(0L);
-                })
-                .flatMap(hopLong -> {
-                    final int finalHop = hopLong.intValue();
+        return hopTracker.increment(finalTxId).flatMap(result -> {
+            final int hop = result.hop();
+            final boolean redisErr = result.redisError();
 
-                    // ── [1] Request Header 업로드 (논블로킹) ──
-                    byte[] reqHeaderBytes = serializeHeaders(exchange.getRequest().getHeaders());
-                    Mono<Void> reqHeaderUpload = uploadDataAsync(finalTxId, reqHeaderBytes, "req.header", finalHop);
+            byte[] reqHeaderBytes = serializeHeaders(exchange.getRequest().getHeaders());
+            logger.info("[REQ] txId={}, hop={}, method={}, path={}", finalTxId, hop, method, path);
 
-                    logger.info("[REQ] txId={}, hop={}, method={}, path={}", finalTxId, finalHop, method, path);
+            ByteArrayOutputStream reqStream = new ByteArrayOutputStream();
+            ByteArrayOutputStream resStream = new ByteArrayOutputStream();
+            AtomicBoolean reqTruncated = new AtomicBoolean(false);
+            AtomicBoolean resTruncated = new AtomicBoolean(false);
 
-                    // ── [2] Body 버퍼 준비 ──
-                    ByteArrayOutputStream reqOutputStream = new ByteArrayOutputStream();
-                    ByteArrayOutputStream resOutputStream = new ByteArrayOutputStream();
+            ServerHttpRequest decoratedReq = buildDecoratedRequest(exchange, finalTxId, method, reqStream, reqTruncated);
+            BodyCapturingResponseDecorator resDecorator =
+                    new BodyCapturingResponseDecorator(exchange.getResponse(), resStream, resTruncated, maxBodySizeBytes);
+            ServerWebExchange mutated = exchange.mutate().request(decoratedReq).response(resDecorator).build();
 
-                    // ── [3] Decorator 구성 ──
-                    ServerHttpRequest mutatedRequest = exchange.getRequest().mutate()
-                            .header("X-Tx-Id", finalTxId)
-                            .build();
-
-                    boolean hasBody = hasBody(method);
-
-                    ServerHttpRequest decoratedRequest = hasBody
-                            ? new RequestBufferLoggingDecorator(mutatedRequest, reqOutputStream)
-                            : mutatedRequest;
-
-                    ResponseBufferLoggingDecorator resDecorator = new ResponseBufferLoggingDecorator(
-                            exchange.getResponse(), resOutputStream);
-
-                    ServerWebExchange mutatedExchange = exchange.mutate()
-                            .request(decoratedRequest)
-                            .response(resDecorator)
-                            .build();
-
-                    // ── [4] 필터 체인 실행 ──
-                    return reqHeaderUpload
-                            .then(chain.filter(mutatedExchange))
-                            .doOnError(e -> exchange.getAttributes().put(ERROR_ATTRIBUTE, e.getMessage()))
-                            .then(Mono.defer(() -> {
-                                // ── [5] 응답 완료 후: 모든 업로드 + 메타데이터 전송 (논블로킹, 순서 보장) ──
-                                Mono<Void> reqBodyUpload = hasBody
-                                        ? uploadDataAsync(finalTxId, reqOutputStream.toByteArray(), "req", finalHop)
-                                        : Mono.empty();
-
-                                Mono<Void> resBodyUpload = uploadDataAsync(
-                                        finalTxId, resOutputStream.toByteArray(), "res", finalHop);
-
-                                byte[] resHeaderBytes = serializeHeaders(exchange.getResponse().getHeaders());
-                                Mono<Void> resHeaderUpload = uploadDataAsync(
-                                        finalTxId, resHeaderBytes, "res.header", finalHop);
-
-                                Mono<Void> metadataUpload = Mono.fromRunnable(() -> {
-                                            try {
-                                                sendMetadata(exchange, finalTxId, finalHop, path, startTime);
-                                            } catch (Exception e) {
-                                                logger.warn("Failed to send metadata: txId={}", finalTxId, e);
-                                            }
-                                        })
-                                        .subscribeOn(Schedulers.boundedElastic())
-                                        .then();
-
-                                // 업로드 병렬 실행 → 완료 후 메타데이터 전송
-                                return Mono.when(reqBodyUpload, resBodyUpload, resHeaderUpload)
-                                        .then(metadataUpload);
-                            }))
-                            .then(Mono.defer(() -> {
-                                // ── [6] 최초 진입 txId인 경우 Redis 키 정리 ──
-                                // 위의 업로드/메타데이터가 모두 완료된 후에만 실행됨
-                                if (isNewTx) {
-                                    return redisTemplate.delete(hopKey)
-                                            .onErrorResume(e -> {
-                                                logger.warn("Failed to delete hop key: {}", hopKey, e);
-                                                return Mono.just(0L);
-                                            })
-                                            .then();
-                                }
-                                return Mono.empty();
-                            }));
-                });
+            return uploadDataAsyncTracked(finalTxId, reqHeaderBytes, "req.header", hop).then()
+                    .then(chain.filter(mutated))
+                    .doOnError(e -> exchange.getAttributes().put(ERROR_ATTRIBUTE, e.getMessage()))
+                    .then(Mono.defer(() -> uploadBodiesAndMetadata(
+                            exchange, finalTxId, hop, path, startTime, redisErr,
+                            method, reqStream, resStream, reqTruncated, resTruncated)))
+                    .then(Mono.defer(() -> isNewTx ? hopTracker.delete(finalTxId) : Mono.empty()));
+        });
     }
 
-    // ──────────────── 유틸리티 메서드 ────────────────
+    private ServerHttpRequest buildDecoratedRequest(ServerWebExchange exchange, String txId,
+            HttpMethod method, ByteArrayOutputStream reqStream, AtomicBoolean reqTruncated) {
+        ServerHttpRequest mutated = exchange.getRequest().mutate().header("X-Tx-Id", txId).build();
+        return hasBody(method)
+                ? new BodyCapturingRequestDecorator(mutated, reqStream, reqTruncated, maxBodySizeBytes)
+                : mutated;
+    }
+
+    private Mono<Void> uploadBodiesAndMetadata(ServerWebExchange exchange, String txId, int hop,
+            String path, long startTime, boolean redisErr, HttpMethod method,
+            ByteArrayOutputStream reqStream, ByteArrayOutputStream resStream,
+            AtomicBoolean reqTruncated, AtomicBoolean resTruncated) {
+        Mono<Boolean> reqBody = hasBody(method)
+                ? uploadDataAsyncTracked(txId, reqStream.toByteArray(), "req", hop)
+                : Mono.just(false);
+        Mono<Boolean> resBody = uploadDataAsyncTracked(txId, resStream.toByteArray(), "res", hop);
+        Mono<Boolean> resHeader = uploadDataAsyncTracked(
+                txId, serializeHeaders(exchange.getResponse().getHeaders()), "res.header", hop);
+
+        return Mono.zip(reqBody, resBody, resHeader).flatMap(results -> {
+            boolean anyUploaded = results.getT1() || results.getT2() || results.getT3();
+            return Mono.fromRunnable(() -> {
+                try {
+                    sendMetadata(exchange, txId, hop, path, startTime,
+                            reqTruncated.get(), resTruncated.get(), redisErr, anyUploaded);
+                } catch (Exception e) {
+                    logger.warn("Failed to send metadata: txId={}", txId, e);
+                }
+            }).subscribeOn(Schedulers.boundedElastic()).then();
+        });
+    }
+
+    private Mono<Boolean> uploadDataAsyncTracked(String txId, byte[] data, String type, int hop) {
+        if (data == null || data.length == 0) return Mono.just(false);
+        return Mono.<Boolean>fromCallable(() -> {
+            try {
+                storageService.upload(txId, data, type, hop);
+                return true;
+            } catch (Exception e) {
+                logger.warn("Failed to upload data: txId={}, type={}", txId, type, e);
+                return false;
+            }
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
 
     static byte[] serializeHeaders(HttpHeaders headers) {
         try {
-            return objectMapper.writerWithDefaultPrettyPrinter()
-                    .writeValueAsBytes(headers.toSingleValueMap());
+            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(headers.toSingleValueMap());
         } catch (Exception e) {
             logger.warn("Failed to serialize headers", e);
             return new byte[0];
         }
     }
 
-    /**
-     * 논블로킹 업로드: boundedElastic 스케줄러에서 실행.
-     * Netty 이벤트 루프 스레드를 차단하지 않는다.
-     */
-    private Mono<Void> uploadDataAsync(String txId, byte[] data, String type, int hop) {
-        if (data == null || data.length == 0) {
-            return Mono.empty();
-        }
-        return Mono.fromRunnable(() -> {
-                    try {
-                        storageService.upload(txId, data, type, hop);
-                    } catch (Exception e) {
-                        logger.warn("Failed to upload data: txId={}, type={}", txId, type, e);
-                    }
-                })
-                .subscribeOn(Schedulers.boundedElastic())
-                .then();
-    }
-
-    private void sendMetadata(ServerWebExchange exchange, String txId, int hop, String path, long startTime) {
+    private void sendMetadata(ServerWebExchange exchange, String txId, int hop, String path, long startTime,
+                              boolean reqBodyTruncated, boolean resBodyTruncated,
+                              boolean redisError, boolean uploadSucceeded) {
         long endTime = System.currentTimeMillis();
-        long duration = endTime - startTime;
         URI targetUrl = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_REQUEST_URL_ATTR);
         HttpStatusCode statusCode = exchange.getResponse().getStatusCode();
         String errorMsg = exchange.getAttribute(ERROR_ATTRIBUTE);
-
-        boolean isError = (statusCode != null && statusCode.isError()) || errorMsg != null;
-        String bodyUrl = storageService.getStorageBaseUrl(txId, hop);
+        String bodyUrl = uploadSucceeded ? storageService.getStorageBaseUrl(txId, hop) : null;
 
         Map<String, Object> metadata = new HashMap<>();
         metadata.put("txId", txId);
         metadata.put("hop", hop);
         metadata.put("path", path);
         metadata.put("target", targetUrl != null ? targetUrl.toString() : "");
-        metadata.put("duration", duration + "ms");
+        metadata.put("duration", (endTime - startTime) + "ms");
         metadata.put("status", statusCode != null ? statusCode.value() : 0);
         metadata.put("reqTime", KST_FORMATTER.format(Instant.ofEpochMilli(startTime)));
         metadata.put("resTime", KST_FORMATTER.format(Instant.ofEpochMilli(endTime)));
         metadata.put("bodyUrl", bodyUrl);
-
-        if (isError) {
+        if ((statusCode != null && statusCode.isError()) || errorMsg != null)
             metadata.put("error", errorMsg != null ? errorMsg : "HTTP Error");
-        }
+        if (reqBodyTruncated) metadata.put("reqBodyTruncated", true);
+        if (resBodyTruncated) metadata.put("resBodyTruncated", true);
+        if (redisError) metadata.put("redisError", true);
 
         logger.info("[RES] {}", metadata);
         metadataSender.send(metadata);
@@ -242,56 +196,5 @@ public class LoggingGlobalFilter implements GlobalFilter, Ordered {
     @Override
     public int getOrder() {
         return Ordered.HIGHEST_PRECEDENCE;
-    }
-
-    // ──────────────── Request Decorator ────────────────
-
-    /**
-     * Request body를 버퍼에 복사만 한다.
-     * 업로드는 외부(필터 체인 완료 후)에서 일괄 처리한다.
-     */
-    class RequestBufferLoggingDecorator extends ServerHttpRequestDecorator {
-        private final ByteArrayOutputStream outputStream;
-
-        public RequestBufferLoggingDecorator(ServerHttpRequest delegate,
-                                             ByteArrayOutputStream outputStream) {
-            super(delegate);
-            this.outputStream = outputStream;
-        }
-
-        @NotNull
-        @Override
-        public Flux<DataBuffer> getBody() {
-            return super.getBody().doOnNext(buffer -> {
-                byte[] bytes = new byte[buffer.readableByteCount()];
-                buffer.read(bytes);
-                buffer.readPosition(buffer.readPosition() - bytes.length);
-                outputStream.write(bytes, 0, bytes.length);
-            });
-            // doOnComplete에서 업로드하지 않음 → 필터 체인 완료 후 일괄 업로드
-        }
-    }
-
-    // ──────────────── Response Decorator ────────────────
-
-    class ResponseBufferLoggingDecorator extends ServerHttpResponseDecorator {
-        private final ByteArrayOutputStream outputStream;
-
-        public ResponseBufferLoggingDecorator(ServerHttpResponse delegate,
-                                              ByteArrayOutputStream outputStream) {
-            super(delegate);
-            this.outputStream = outputStream;
-        }
-
-        @NotNull
-        @Override
-        public Mono<Void> writeWith(Publisher<? extends DataBuffer> body) {
-            return super.writeWith(Flux.from(body).doOnNext(buffer -> {
-                byte[] bytes = new byte[buffer.readableByteCount()];
-                buffer.read(bytes);
-                buffer.readPosition(buffer.readPosition() - bytes.length);
-                outputStream.write(bytes, 0, bytes.length);
-            }));
-        }
     }
 }

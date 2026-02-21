@@ -73,4 +73,8 @@ public class GatewayLog {
     public void incrementBodyRetryCount() {
         this.bodyRetryCount++;
     }
+
+    public void clearBodyUrl() {
+        this.bodyUrl = null;
+    }
 }

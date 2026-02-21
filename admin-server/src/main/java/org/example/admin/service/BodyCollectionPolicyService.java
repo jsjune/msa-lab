@@ -9,6 +9,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
+import org.springframework.data.domain.Sort;
+
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -17,7 +19,7 @@ public class BodyCollectionPolicyService {
     private final BodyCollectionPolicyRepository policyRepository;
 
     public List<BodyCollectionPolicy> findAll() {
-        return policyRepository.findAll();
+        return policyRepository.findAll(Sort.by("id"));
     }
 
     @Transactional

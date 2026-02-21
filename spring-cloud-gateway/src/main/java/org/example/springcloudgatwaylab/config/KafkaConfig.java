@@ -2,6 +2,7 @@ package org.example.springcloudgatwaylab.config;
 
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -20,7 +21,7 @@ public class KafkaConfig {
     @Value("${spring.kafka.bootstrap-servers:localhost:9092}")
     private String bootstrapServers;
 
-    @Value("${spring.kafka.topic.metadata:gateway-meta-logs}")
+    @Value("${gateway.kafka.topic.metadata:gateway-meta-logs}")
     private String metadataTopic;
 
     /**
@@ -33,8 +34,8 @@ public class KafkaConfig {
         configProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         configProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         
-        // Performance & Reliability Settings (Speed > Reliability)
-        configProps.put(ProducerConfig.ACKS_CONFIG, "0"); // Fire and forget
+        // Performance & Reliability Settings
+        configProps.put(ProducerConfig.ACKS_CONFIG, "1"); // Leader 기록 확인 후 응답
         configProps.put(ProducerConfig.RETRIES_CONFIG, 0);
         configProps.put(ProducerConfig.LINGER_MS_CONFIG, 10); // Batching delay
 
@@ -57,7 +58,8 @@ public class KafkaConfig {
         return TopicBuilder.name(metadataTopic)
                 .partitions(3)
                 .replicas(2)
-                .compact()
+                .config(TopicConfig.CLEANUP_POLICY_CONFIG, TopicConfig.CLEANUP_POLICY_DELETE)
+                .config(TopicConfig.RETENTION_MS_CONFIG, "604800000")
                 .build();
     }
 }

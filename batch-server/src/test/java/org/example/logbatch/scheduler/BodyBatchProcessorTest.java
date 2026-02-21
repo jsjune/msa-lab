@@ -7,6 +7,7 @@ import org.example.logbatch.repository.GatewayLogBodyRepository;
 import org.example.logbatch.repository.GatewayLogRepository;
 import org.example.logbatch.service.BodyCollectionService;
 import org.example.logbatch.storage.MinioLogFetcher;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -14,15 +15,15 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.scheduling.annotation.Scheduled;
 
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -53,7 +54,7 @@ class BodyBatchProcessorTest {
     void setUp() {
         BatchProperties batchProperties = new BatchProperties(
                 new BatchProperties.MetadataProperties(true, "gateway-meta-logs"),
-                new BatchProperties.BodyProperties(true, 30000, BATCH_SIZE, MAX_RETRIES));
+                new BatchProperties.BodyProperties(true, 30000, BATCH_SIZE, MAX_RETRIES, 3_600_000L));
         processor = new BodyBatchProcessor(
                 gatewayLogRepository, gatewayLogBodyRepository,
                 bodyCollectionService, minioLogFetcher, batchProperties);
@@ -149,24 +150,51 @@ class BodyBatchProcessorTest {
         verify(gatewayLogBodyRepository, times(1)).save(any(GatewayLogBody.class));
     }
 
-    // ── 중복 실행 방지 ──
-
     @Test
-    @DisplayName("이전 배치가 완료되지 않으면 다음 실행 건너뜀")
-    void concurrentExecution_skipped() {
-        GatewayLog log = createLog("tx-1", 1, "/server-a/hello");
-        when(gatewayLogRepository.findLogsNeedingBodyCollection(eq(MAX_RETRIES), any()))
-                .thenReturn(List.of(log));
-        when(bodyCollectionService.shouldCollectBody(anyString())).thenReturn(true);
-        when(minioLogFetcher.fetchAllByBodyUrl(anyString())).thenAnswer(invocation -> {
-            // 진행 중일 때 두 번째 호출 시도
-            assertThat(processor.isRunning()).isTrue();
-            return new MinioLogFetcher.FetchResult("req", "res", "rh", "rsh");
-        });
+    @DisplayName("maxRetries 초과 건 존재 시 countLogsExceedingRetries 호출하여 경고 기록")
+    void processBodyBatch_exceededRetries_countQueryCalled() {
+        when(gatewayLogRepository.countLogsExceedingRetries(MAX_RETRIES)).thenReturn(2L);
+        when(gatewayLogRepository.findLogsNeedingBodyCollection(MAX_RETRIES, PageRequest.of(0, BATCH_SIZE)))
+                .thenReturn(Collections.emptyList());
 
         processor.processBodyBatch();
 
-        assertThat(processor.isRunning()).isFalse();
+        verify(gatewayLogRepository).countLogsExceedingRetries(MAX_RETRIES);
+    }
+
+    @Test
+    @DisplayName("maxRetries 초과 건 없을 때도 countLogsExceedingRetries는 항상 호출된다")
+    void processBodyBatch_noExceededRetries_countQueryStillCalled() {
+        when(gatewayLogRepository.countLogsExceedingRetries(MAX_RETRIES)).thenReturn(0L);
+        when(gatewayLogRepository.findLogsNeedingBodyCollection(MAX_RETRIES, PageRequest.of(0, BATCH_SIZE)))
+                .thenReturn(Collections.emptyList());
+
+        processor.processBodyBatch();
+
+        verify(gatewayLogRepository).countLogsExceedingRetries(MAX_RETRIES);
+    }
+
+    // ── ShedLock 분산 잠금 설정 ──
+
+    @Test
+    @DisplayName("processBodyBatch에 @SchedulerLock(name=bodyBatchProcessor, lockAtMostFor=PT10M) 어노테이션이 설정되어 있다")
+    void processBodyBatch_hasSchedulerLockAnnotation() throws Exception {
+        Method method = BodyBatchProcessor.class.getMethod("processBodyBatch");
+        SchedulerLock lock = method.getAnnotation(SchedulerLock.class);
+
+        assertThat(lock).isNotNull();
+        assertThat(lock.name()).isEqualTo("bodyBatchProcessor");
+        assertThat(lock.lockAtMostFor()).isEqualTo("PT10M");
+    }
+
+    @Test
+    @DisplayName("processBodyBatch에 @Scheduled 어노테이션이 설정되어 있다")
+    void processBodyBatch_hasScheduledAnnotation() throws Exception {
+        Method method = BodyBatchProcessor.class.getMethod("processBodyBatch");
+        Scheduled scheduled = method.getAnnotation(Scheduled.class);
+
+        assertThat(scheduled).isNotNull();
+        assertThat(scheduled.fixedDelayString()).isEqualTo("${batch.body.fixed-delay:30000}");
     }
 
     // ── 정책 캐시 관리 ──

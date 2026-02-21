@@ -23,4 +23,13 @@ public interface GatewayLogRepository extends JpaRepository<GatewayLog, Long> {
 
     @Query("SELECT g FROM GatewayLog g WHERE g.bodyUrl IS NOT NULL AND g.body IS NULL AND g.bodyRetryCount < :maxRetries")
     List<GatewayLog> findLogsNeedingBodyCollection(@Param("maxRetries") int maxRetries, Pageable pageable);
+
+    @Query("SELECT COUNT(g) FROM GatewayLog g WHERE g.bodyUrl IS NOT NULL AND g.body IS NULL AND g.bodyRetryCount >= :maxRetries")
+    long countLogsExceedingRetries(@Param("maxRetries") int maxRetries);
+
+    @Query("SELECT g FROM GatewayLog g WHERE g.bodyUrl IS NOT NULL AND g.body IS NOT NULL")
+    List<GatewayLog> findLogsWithBodyCollected(Pageable pageable);
+
+    @Query("SELECT g FROM GatewayLog g WHERE g.bodyUrl IS NOT NULL AND g.body IS NULL AND g.bodyRetryCount >= :maxRetries")
+    List<GatewayLog> findLogsExceedingRetries(@Param("maxRetries") int maxRetries, Pageable pageable);
 }

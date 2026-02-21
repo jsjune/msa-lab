@@ -9,8 +9,6 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.core.Ordered;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
-import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
-import org.springframework.data.redis.core.ReactiveValueOperations;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.web.server.ServerWebExchange;
@@ -18,7 +16,6 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
-import java.time.Duration;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,28 +27,23 @@ class LoggingGlobalFilterTest {
 
     private LogStorageService storageService;
     private KafkaMetadataSender metadataSender;
-    private ReactiveStringRedisTemplate redisTemplate;
-    private ReactiveValueOperations<String, String> valueOps;
+    private HopTracker hopTracker;
     private GatewayFilterChain chain;
     private LoggingGlobalFilter filter;
 
-    @SuppressWarnings("unchecked")
     @BeforeEach
     void setUp() {
         storageService = mock(LogStorageService.class);
         metadataSender = mock(KafkaMetadataSender.class);
-        redisTemplate = mock(ReactiveStringRedisTemplate.class);
-        valueOps = mock(ReactiveValueOperations.class);
+        hopTracker = mock(HopTracker.class);
         chain = mock(GatewayFilterChain.class);
 
-        when(redisTemplate.opsForValue()).thenReturn(valueOps);
-        when(valueOps.increment(anyString())).thenReturn(Mono.just(1L));
-        when(redisTemplate.expire(anyString(), any(Duration.class))).thenReturn(Mono.just(true));
-        when(redisTemplate.delete(anyString())).thenReturn(Mono.just(1L));
+        when(hopTracker.increment(anyString())).thenReturn(Mono.just(new HopTracker.HopResult(1, false)));
+        when(hopTracker.delete(anyString())).thenReturn(Mono.empty());
         when(chain.filter(any())).thenReturn(Mono.empty());
         when(storageService.getStorageBaseUrl(anyString(), anyInt())).thenReturn("s3://bucket/path");
 
-        filter = new LoggingGlobalFilter(storageService, metadataSender, redisTemplate);
+        filter = new LoggingGlobalFilter(storageService, metadataSender, hopTracker, 1024 * 1024, "/actuator/**");
     }
 
     @Test
@@ -101,7 +93,7 @@ class LoggingGlobalFilterTest {
                 .verifyComplete();
 
         // existing txId → Redis key should NOT be deleted (isNewTx = false)
-        verify(redisTemplate, never()).delete(anyString());
+        verify(hopTracker, never()).delete(anyString());
     }
 
     // ── 3.4 비동기 업로드 조정 ──
@@ -148,11 +140,9 @@ class LoggingGlobalFilterTest {
     // ── 3.2 Hop Counter ──
 
     @Test
-    @DisplayName("최초 요청 시 Redis INCR을 호출하여 hop=1을 반환한다")
-    void filter_firstRequest_redisIncrReturnsHop1() {
-        // given
-        when(valueOps.increment(anyString())).thenReturn(Mono.just(1L));
-
+    @DisplayName("최초 요청 시 HopTracker.increment()가 호출된다")
+    void filter_firstRequest_hopTrackerIncrementCalled() {
+        // given — setUp에서 hop=1 기본값 반환
         MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
         MockServerWebExchange exchange = MockServerWebExchange.from(request);
 
@@ -161,27 +151,12 @@ class LoggingGlobalFilterTest {
                 .verifyComplete();
 
         // then
-        verify(valueOps).increment(argThat(key -> key.startsWith("hop:")));
+        verify(hopTracker).increment(anyString());
     }
 
     @Test
-    @DisplayName("Redis hop 키에 TTL 5분을 설정한다")
-    void filter_setsHopKeyTtlTo5Minutes() {
-        // given
-        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
-        MockServerWebExchange exchange = MockServerWebExchange.from(request);
-
-        // when
-        StepVerifier.create(filter.filter(exchange, chain))
-                .verifyComplete();
-
-        // then
-        verify(redisTemplate).expire(argThat(key -> key.startsWith("hop:")), eq(Duration.ofMinutes(5)));
-    }
-
-    @Test
-    @DisplayName("isNewTx=true일 때 필터 완료 후 Redis hop 키를 삭제한다")
-    void filter_newTx_deletesRedisHopKey() {
+    @DisplayName("isNewTx=true일 때 필터 완료 후 HopTracker.delete()가 호출된다")
+    void filter_newTx_hopTrackerDeleteCalled() {
         // given — no X-Tx-Id header → isNewTx = true
         MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
         MockServerWebExchange exchange = MockServerWebExchange.from(request);
@@ -191,12 +166,12 @@ class LoggingGlobalFilterTest {
                 .verifyComplete();
 
         // then
-        verify(redisTemplate).delete(argThat((String key) -> key.startsWith("hop:")));
+        verify(hopTracker).delete(anyString());
     }
 
     @Test
-    @DisplayName("isNewTx=false일 때 Redis hop 키를 삭제하지 않는다")
-    void filter_existingTx_doesNotDeleteRedisHopKey() {
+    @DisplayName("isNewTx=false일 때 HopTracker.delete()가 호출되지 않는다")
+    void filter_existingTx_hopTrackerDeleteNotCalled() {
         // given — X-Tx-Id present → isNewTx = false
         MockServerHttpRequest request = MockServerHttpRequest
                 .get("/server-a/hello")
@@ -209,7 +184,7 @@ class LoggingGlobalFilterTest {
                 .verifyComplete();
 
         // then
-        verify(redisTemplate, never()).delete(anyString());
+        verify(hopTracker, never()).delete(anyString());
     }
 
     // ── 3.5 메타데이터 구성 ──
@@ -293,12 +268,12 @@ class LoggingGlobalFilterTest {
     }
 
     @Test
-    @DisplayName("동일 txId로 연속 요청 시 hop 값이 증가한다")
-    void filter_sameExistingTxId_hopIncreases() {
+    @DisplayName("동일 txId로 연속 요청 시 HopTracker.increment()가 2번 호출된다")
+    void filter_sameExistingTxId_hopTrackerIncrementCalledTwice() {
         // given — 두 번째 요청은 hop=2
-        when(valueOps.increment(anyString()))
-                .thenReturn(Mono.just(1L))
-                .thenReturn(Mono.just(2L));
+        when(hopTracker.increment(eq("shared-tx")))
+                .thenReturn(Mono.just(new HopTracker.HopResult(1, false)))
+                .thenReturn(Mono.just(new HopTracker.HopResult(2, false)));
 
         MockServerHttpRequest req1 = MockServerHttpRequest
                 .get("/server-a/chain").header("X-Tx-Id", "shared-tx").build();
@@ -311,9 +286,9 @@ class LoggingGlobalFilterTest {
         StepVerifier.create(filter.filter(MockServerWebExchange.from(req2), chain))
                 .verifyComplete();
 
-        // then — Redis INCR 2번, delete 없음 (isNewTx=false)
-        verify(valueOps, times(2)).increment(eq("hop:shared-tx"));
-        verify(redisTemplate, never()).delete(anyString());
+        // then — HopTracker.increment() 2번, delete 없음 (isNewTx=false)
+        verify(hopTracker, times(2)).increment(eq("shared-tx"));
+        verify(hopTracker, never()).delete(anyString());
     }
 
     @Test
@@ -329,6 +304,45 @@ class LoggingGlobalFilterTest {
         // when & then — 예외 전파 없이 완료
         StepVerifier.create(filter.filter(exchange, chain))
                 .verifyComplete();
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("모든 업로드 실패 시 Kafka 메타데이터에 bodyUrl=null이 전송된다")
+    void filter_allUploadsFail_bodyUrlIsNullInMetadata() {
+        // given — 모든 upload 호출에서 예외 발생
+        doThrow(new RuntimeException("MinIO down")).when(storageService)
+                .upload(anyString(), any(byte[].class), anyString(), anyInt());
+
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — bodyUrl=null (존재하지 않는 URL을 batch-server가 조회하지 못하도록)
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(metadataSender).send(captor.capture());
+        assertThat(captor.getValue().get("bodyUrl")).isNull();
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("업로드 성공 시 Kafka 메타데이터에 실제 bodyUrl이 전송된다")
+    void filter_uploadSucceeds_bodyUrlPresentInMetadata() {
+        // given — 기본 setUp: storageService.upload()는 예외 없음
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — bodyUrl이 null이 아니어야 함
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(metadataSender).send(captor.capture());
+        assertThat(captor.getValue().get("bodyUrl")).isEqualTo("s3://bucket/path");
     }
 
     @Test
@@ -364,38 +378,77 @@ class LoggingGlobalFilterTest {
     }
 
     @Test
-    @DisplayName("Redis 호출 실패 시 hop=0으로 폴백하여 필터가 정상 완료된다")
-    void filter_redisFailure_fallbackToDefaultHop() {
-        // given
-        when(valueOps.increment(anyString())).thenReturn(Mono.error(new RuntimeException("Redis down")));
+    @DisplayName("HopTracker가 hop=1 폴백을 반환하면 hop=1로 storageService 업로드가 호출된다")
+    void filter_hopTrackerFallbackHop1_usedInUpload() {
+        // given — HopTracker가 Redis 장애 폴백 결과 반환
+        when(hopTracker.increment(anyString()))
+                .thenReturn(Mono.just(new HopTracker.HopResult(1, true)));
 
         MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
         MockServerWebExchange exchange = MockServerWebExchange.from(request);
 
-        // when & then — Redis 실패 시 hop=0으로 폴백, 라우팅 정상 진행
+        // when
         StepVerifier.create(filter.filter(exchange, chain))
                 .verifyComplete();
 
-        // hop=0으로 storageService 호출 확인
-        verify(storageService).upload(anyString(), any(byte[].class), eq("req.header"), eq(0));
+        // then — hop=1로 업로드 호출 (hop=0 충돌 방지)
+        verify(storageService).upload(anyString(), any(byte[].class), eq("req.header"), eq(1));
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("HopTracker가 redisError=true를 반환하면 메타데이터에 redisError=true 플래그가 포함된다")
+    void filter_hopTrackerRedisError_metadataContainsRedisErrorFlag() {
+        // given — HopTracker가 redisError=true 반환
+        when(hopTracker.increment(anyString()))
+                .thenReturn(Mono.just(new HopTracker.HopResult(1, true)));
+
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — 메타데이터에 redisError=true 포함 확인
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(metadataSender).send(captor.capture());
+        assertThat(captor.getValue()).containsEntry("redisError", true);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("HopTracker가 redisError=false를 반환하면 메타데이터에 redisError 플래그가 없다")
+    void filter_hopTrackerNoRedisError_metadataHasNoRedisErrorFlag() {
+        // given — setUp 기본값: HopResult(1, false)
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — redisError 키 없음
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(metadataSender).send(captor.capture());
+        assertThat(captor.getValue()).doesNotContainKey("redisError");
     }
 
     @Test
-    @DisplayName("Redis EXPIRE만 실패해도 INCR 성공값으로 필터가 정상 완료된다")
-    void filter_redisExpireFailure_filterStillCompletes() {
-        // given — INCR 성공, EXPIRE 실패
-        when(valueOps.increment(anyString())).thenReturn(Mono.just(3L));
-        when(redisTemplate.expire(anyString(), any(Duration.class)))
-                .thenReturn(Mono.error(new RuntimeException("Redis EXPIRE failed")));
+    @DisplayName("HopTracker가 hop=3을 반환하면 hop=3으로 storageService가 호출된다")
+    void filter_hopTrackerReturnsHop3_usedInUpload() {
+        // given — HopTracker hop=3 반환
+        when(hopTracker.increment(anyString()))
+                .thenReturn(Mono.just(new HopTracker.HopResult(3, false)));
 
         MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
         MockServerWebExchange exchange = MockServerWebExchange.from(request);
 
-        // when & then — EXPIRE 실패해도 hop=3으로 정상 진행
+        // when
         StepVerifier.create(filter.filter(exchange, chain))
                 .verifyComplete();
 
-        // INCR 성공값(3)으로 storageService 호출 확인
+        // then — hop=3으로 업로드 확인
         verify(storageService).upload(anyString(), any(byte[].class), eq("req.header"), eq(3));
     }
 
@@ -571,6 +624,81 @@ class LoggingGlobalFilterTest {
         verify(storageService).upload(anyString(), any(byte[].class), eq("req.header"), anyInt());
         // 메타데이터 전송됨
         verify(metadataSender).send(any(Map.class));
+    }
+
+    // ── Phase 1.2: Health Check 경로 Skip ──
+
+    @Test
+    @DisplayName("/actuator/health 요청 시 Redis/MinIO/Kafka 호출 없이 chain만 통과한다")
+    void filter_actuatorHealthPath_skipsLoggingPipeline() {
+        // given
+        MockServerHttpRequest request = MockServerHttpRequest.get("/actuator/health").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — HopTracker, MinIO, Kafka 모두 호출되지 않음
+        verify(hopTracker, never()).increment(anyString());
+        verify(storageService, never()).upload(anyString(), any(byte[].class), anyString(), anyInt());
+        verify(metadataSender, never()).send(any());
+        verify(chain).filter(exchange);
+    }
+
+    @Test
+    @DisplayName("/actuator/health/liveness 요청도 skip 패턴에 매칭되어 로깅 파이프라인을 건너뛴다")
+    void filter_actuatorHealthLivenessPath_skipsLoggingPipeline() {
+        // given
+        MockServerHttpRequest request = MockServerHttpRequest.get("/actuator/health/liveness").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then
+        verify(hopTracker, never()).increment(anyString());
+        verify(storageService, never()).upload(anyString(), any(byte[].class), anyString(), anyInt());
+        verify(metadataSender, never()).send(any());
+    }
+
+    @Test
+    @DisplayName("/server-a/** 요청은 skip 경로에 해당하지 않아 정상 로깅된다")
+    void filter_serverAPath_notSkipped_loggingPipelineExecuted() {
+        // given
+        MockServerHttpRequest request = MockServerHttpRequest.get("/server-a/hello").build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        // when
+        StepVerifier.create(filter.filter(exchange, chain))
+                .verifyComplete();
+
+        // then — 정상 로깅 파이프라인 실행 확인
+        verify(hopTracker).increment(anyString());
+        verify(metadataSender).send(any());
+    }
+
+    @Test
+    @DisplayName("skip-paths에 여러 패턴이 쉼표로 구분되어 있으면 모두 매칭된다")
+    void filter_multipleSkipPatterns_allMatched() {
+        // given — skip-paths에 /actuator/** 와 /healthz 추가
+        LoggingGlobalFilter multiSkipFilter = new LoggingGlobalFilter(
+                storageService, metadataSender, hopTracker, 1024 * 1024, "/actuator/**,/healthz");
+
+        MockServerHttpRequest actuatorReq = MockServerHttpRequest.get("/actuator/ready").build();
+        MockServerHttpRequest healthzReq = MockServerHttpRequest.get("/healthz").build();
+
+        // when & then — 두 경로 모두 skip
+        StepVerifier.create(multiSkipFilter.filter(MockServerWebExchange.from(actuatorReq), chain))
+                .verifyComplete();
+        StepVerifier.create(multiSkipFilter.filter(MockServerWebExchange.from(healthzReq), chain))
+                .verifyComplete();
+
+        // Redis, MinIO, Kafka 호출 없음
+        verify(hopTracker, never()).increment(anyString());
+        verify(storageService, never()).upload(anyString(), any(byte[].class), anyString(), anyInt());
+        verify(metadataSender, never()).send(any());
     }
 
     @Test

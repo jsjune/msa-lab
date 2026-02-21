@@ -324,6 +324,39 @@ class GatewayLogRepositoryTest {
     }
 
     @Test
+    @DisplayName("bodyRetryCount >= maxRetries이고 body 미수집인 건수를 정확히 반환한다")
+    void countLogsExceedingRetries_returnsCorrectCount() {
+        Instant reqTime = Instant.parse("2026-02-17T10:00:00Z");
+
+        // retryCount=3 (초과) — 대상
+        GatewayLog exceeded = createLog("exceeded", 1, 200, reqTime);
+        exceeded.incrementBodyRetryCount();
+        exceeded.incrementBodyRetryCount();
+        exceeded.incrementBodyRetryCount();
+        gatewayLogRepository.save(exceeded);
+
+        // retryCount=2 (미초과) — 제외
+        GatewayLog notExceeded = createLog("not-exceeded", 1, 200, reqTime);
+        notExceeded.incrementBodyRetryCount();
+        notExceeded.incrementBodyRetryCount();
+        gatewayLogRepository.save(notExceeded);
+
+        // body 이미 수집됨 — 제외
+        GatewayLog withBody = createLog("with-body", 1, 200, reqTime);
+        withBody.incrementBodyRetryCount();
+        withBody.incrementBodyRetryCount();
+        withBody.incrementBodyRetryCount();
+        GatewayLog savedWithBody = gatewayLogRepository.save(withBody);
+        gatewayLogBodyRepository.save(GatewayLogBody.builder()
+                .gatewayLog(savedWithBody).requestBody("req").responseBody("res").build());
+
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(gatewayLogRepository.countLogsExceedingRetries(3)).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("txId로 조회 시 body JOIN fetch → 메타데이터 + body 함께 반환")
     void findByTxIdWithBody_fetchesBodyJoin() {
         Instant reqTime = Instant.parse("2026-02-17T10:00:00Z");

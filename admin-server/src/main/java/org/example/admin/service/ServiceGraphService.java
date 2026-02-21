@@ -6,12 +6,15 @@ import org.example.admin.domain.DateRange;
 import org.example.admin.domain.PercentileCalculator;
 import org.example.admin.domain.ServiceEdge;
 import org.example.admin.domain.ServiceNode;
+import org.example.admin.domain.ThroughputStats;
 import org.example.admin.domain.TrafficGraph;
 import org.example.admin.repository.GatewayLogReadRepository;
 import org.example.admin.repository.HopRawProjection;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -108,6 +111,24 @@ public class ServiceGraphService {
                 .toList();
 
         return TrafficGraph.builder().nodes(nodes).edges(edges).build();
+    }
+
+    public ThroughputStats calcThroughput(DateRange range) {
+        List<Instant> times = logRepository.findExternalRequestTimes(range.getFrom(), range.getTo());
+        long total = times.size();
+
+        double durationMinutes = Duration.between(range.getFrom(), range.getTo()).toSeconds() / 60.0;
+        double avgPerMinute = durationMinutes > 0 ? total / durationMinutes : 0;
+
+        Map<Long, Long> perMinute = times.stream()
+                .collect(Collectors.groupingBy(t -> t.getEpochSecond() / 60, Collectors.counting()));
+        long maxPerMinute = perMinute.values().stream().mapToLong(Long::longValue).max().orElse(0);
+
+        return ThroughputStats.builder()
+                .totalRequests(total)
+                .avgPerMinute(Math.round(avgPerMinute * 10.0) / 10.0)
+                .maxPerMinute(maxPerMinute)
+                .build();
     }
 
     private String extractService(String path) {

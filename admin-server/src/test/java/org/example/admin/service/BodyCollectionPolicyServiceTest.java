@@ -14,6 +14,8 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import org.springframework.data.domain.Sort;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
@@ -46,7 +48,7 @@ class BodyCollectionPolicyServiceTest {
                 BodyCollectionPolicy.builder().pathPattern("/a/**").build(),
                 BodyCollectionPolicy.builder().pathPattern("/b/**").build()
         );
-        given(policyRepository.findAll()).willReturn(policies);
+        given(policyRepository.findAll(any(Sort.class))).willReturn(policies);
 
         List<BodyCollectionPolicy> result = policyService.findAll();
 

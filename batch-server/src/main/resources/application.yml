@@ -11,7 +11,7 @@ spring:
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
-      ddl-auto: ${JPA_DDL_AUTO:update}
+      ddl-auto: ${JPA_DDL_AUTO:validate}
     properties:
       hibernate:
         format_sql: true
@@ -36,6 +36,7 @@ batch:
     fixed-delay: ${BATCH_BODY_FIXED_DELAY:5000}
     batch-size: ${BATCH_BODY_BATCH_SIZE:100}
     max-retries: ${BATCH_BODY_MAX_RETRIES:3}
+    cleanup-delay: ${BATCH_BODY_CLEANUP_DELAY:3600000}
 
 logging:
   level:

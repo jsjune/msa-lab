@@ -145,6 +145,18 @@ class LogEntryMapperTest {
     }
 
     @Test
+    @DisplayName("bodyUrl이 null인 JSON → GatewayLog.bodyUrl은 null (gateway 업로드 전체 실패 시나리오)")
+    void fromKafkaJson_bodyUrlNull_entityBodyUrlIsNull() {
+        Map<String, Object> json = validKafkaJson();
+        json.put("bodyUrl", null); // gateway가 모든 업로드 실패 시 null로 전송
+
+        GatewayLog log = LogEntryMapper.fromKafkaJson(json);
+
+        assertThat(log).isNotNull();
+        assertThat(log.getBodyUrl()).isNull();
+    }
+
+    @Test
     @DisplayName("필수 필드(txId) 누락 JSON → null 반환")
     void fromKafkaJson_missingTxId_returnsNull() {
         Map<String, Object> json = validKafkaJson();
